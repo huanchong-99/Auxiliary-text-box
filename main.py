@@ -172,6 +172,10 @@ class TopMostEditor:
                 with open(self.filename, "w", encoding="utf-8") as file:
                     file.write(content)
                 self.text_editor.edit_modified(False)
+                # 更新窗口标题，移除星号
+                title = self.root.title()
+                if title.startswith('*'):
+                    self.root.title(title[1:])
                 return True
             except Exception as e:
                 messagebox.showerror("错误", f"无法保存文件: {str(e)}")
@@ -472,7 +476,7 @@ class TopMostEditor:
             if self.root.title()[0] != '*':
                 title = self.root.title()
                 self.root.title('*' + title)
-        self.text_editor.edit_modified(False)
+            # 不要重置edit_modified状态，让它保持为True直到文件被保存
     
     def apply_syntax_highlighting(self):
         # Clear all tags
