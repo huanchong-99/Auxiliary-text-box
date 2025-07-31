@@ -18,7 +18,7 @@ class TopMostEditor:
         
         # 设置默认灰色背景
         default_bg = "#A0A0A0"  # RGB值160,160,160对应的十六进制颜色代码
-        default_fg = "#000000"  # 黑色文字
+        default_fg = "#3D2914"  # 更深的褐色文字
         
         # 应用默认颜色到根窗口
         self.root.configure(bg=default_bg)
@@ -502,4 +502,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     editor = TopMostEditor(root)
     root.protocol("WM_DELETE_WINDOW", editor.exit_app)
-    root.mainloop() 
+    root.mainloop()
