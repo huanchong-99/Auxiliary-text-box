@@ -7,6 +7,11 @@ import json
 import base64
 from io import BytesIO
 try:
+    from ctypes import windll
+    WINDOWS_API_AVAILABLE = True
+except ImportError:
+    WINDOWS_API_AVAILABLE = False
+try:
     from PIL import Image, ImageTk
     PIL_AVAILABLE = True
 except ImportError:
@@ -15,92 +20,65 @@ except ImportError:
 class TopMostEditor:
     def __init__(self, root):
         self.root = root
+        self.parent_window = None  # 用于存储父窗口引用
         self.filename = None
         # 标签页管理
         self.tabs = []  # 存储所有标签页信息
         self.current_tab_index = 0  # 当前活动标签页索引
         self.tab_counter = 0  # 标签页计数器
+        # 初始化图片拖拽相关属性
+        self.drag_data = None
+        self.drag_canvas = None  # 用于自由拖拽的Canvas覆盖层
+        self.floating_images = {}  # 存储浮动图片Label组件
         self.setup_ui()
         # 创建第一个标签页
         self.create_new_tab("新建文档")
         
     def setup_ui(self):
         # Configure the main window
-        self.root.title("缓冲编辑器（强制置顶）")
-        self.root.geometry("800x600")
+        self.root.geometry("600x400+300+200")  # 缩小窗口并设置初始位置
         self.root.attributes('-topmost', True)  # Make window always on top
         
-        # 设置默认灰色背景
-        default_bg = "#A0A0A0"  # RGB值160,160,160对应的十六进制颜色代码
-        default_fg = "#3D2914"  # 更深的褐色文字
+        # 设置默认灰色背景（设为实例变量）
+        self.default_bg = "#A0A0A0"  # RGB值160,160,160对应的十六进制颜色代码
+        self.default_fg = "#3D2914"  # 更深的褐色文字
+        
+        # 设置窗口标题
+        self.root.title("缓冲编辑器（强制置顶）")
+        
+        # 移除系统标题栏
+        self.root.overrideredirect(True)
         
         # 应用默认颜色到根窗口
-        self.root.configure(bg=default_bg)
+        self.root.configure(bg=self.default_bg)
         
-        # Create main menu
-        self.menu_bar = tk.Menu(self.root)
+        # 创建自定义标题栏
+        self.create_custom_title_bar()
         
-        # File menu
-        self.file_menu = tk.Menu(self.menu_bar, tearoff=0)
-        self.file_menu.add_command(label="新建", command=self.new_file, accelerator="Ctrl+N")
-        self.file_menu.add_command(label="打开", command=self.open_file, accelerator="Ctrl+O")
-        self.file_menu.add_command(label="保存", command=self.save_file, accelerator="Ctrl+S")
-        self.file_menu.add_command(label="另存为", command=self.save_as, accelerator="Ctrl+Shift+S")
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="退出", command=self.exit_app)
-        self.menu_bar.add_cascade(label="文件", menu=self.file_menu)
+        # 创建自定义菜单栏框架（替代系统菜单栏，因为Windows不支持颜色自定义）
+        self.custom_menu_frame = tk.Frame(self.root, bg=self.default_bg, height=30)
+        self.custom_menu_frame.pack(fill=tk.X, side=tk.TOP)
+        self.custom_menu_frame.pack_propagate(False)
         
-        # Edit menu
-        self.edit_menu = tk.Menu(self.menu_bar, tearoff=0)
-        self.edit_menu.add_command(label="撤销", command=self.undo, accelerator="Ctrl+Z")
-        self.edit_menu.add_command(label="重做", command=self.redo, accelerator="Ctrl+Y")
-        self.edit_menu.add_separator()
-        self.edit_menu.add_command(label="剪切", command=self.cut, accelerator="Ctrl+X")
-        self.edit_menu.add_command(label="复制", command=self.copy, accelerator="Ctrl+C")
-        self.edit_menu.add_command(label="粘贴", command=self.paste, accelerator="Ctrl+V")
-        self.edit_menu.add_separator()
-        self.edit_menu.add_command(label="查找", command=self.find_text, accelerator="Ctrl+F")
-        self.menu_bar.add_cascade(label="编辑", menu=self.edit_menu)
-        
-        # Insert menu
-        self.insert_menu = tk.Menu(self.menu_bar, tearoff=0)
-        if PIL_AVAILABLE:
-            self.insert_menu.add_command(label="插入图片", command=self.insert_image)
-        else:
-            self.insert_menu.add_command(label="插入图片 (需要安装PIL)", command=self.show_pil_warning, state="disabled")
-        self.menu_bar.add_cascade(label="插入", menu=self.insert_menu)
-        
-        # Format menu
-        self.format_menu = tk.Menu(self.menu_bar, tearoff=0)
-        self.format_menu.add_command(label="文字颜色", command=self.change_text_color)
-        self.format_menu.add_command(label="背景颜色", command=self.change_bg_color)
-        self.format_menu.add_command(label="字体选择", command=self.change_font)
-        self.menu_bar.add_cascade(label="格式", menu=self.format_menu)
-        
-        # View menu
-        self.view_menu = tk.Menu(self.menu_bar, tearoff=0)
-        self.view_menu.add_command(label="显示行号", command=self.toggle_line_numbers)
-        self.menu_bar.add_cascade(label="查看", menu=self.view_menu)
-        
-        # Set the menu bar
-        self.root.config(menu=self.menu_bar)
+        # 创建菜单按钮
+        self.create_custom_menu_buttons()
         
         # 创建主框架
         self.main_frame = tk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
         # 创建书签式标签页面板
-        self.tab_panel = tk.Frame(self.main_frame, width=25, bg=default_bg, relief=tk.FLAT, bd=0)
+        self.tab_panel = tk.Frame(self.main_frame, width=25, bg=self.default_bg, relief=tk.FLAT, bd=0)
         self.tab_panel.pack(side=tk.LEFT, fill=tk.Y)
         self.tab_panel.pack_propagate(False)  # 固定宽度
         
         # 标签页容器（书签式叠放）
-        self.tab_container = tk.Frame(self.tab_panel, bg=default_bg)
+        self.tab_container = tk.Frame(self.tab_panel, bg=self.default_bg)
         self.tab_container.pack(fill=tk.BOTH, expand=True, padx=2, pady=5)
         
         # 新建标签页按钮（小图标）
         new_tab_btn = tk.Button(self.tab_panel, text="+", command=lambda: self.create_new_tab(),
-                               bg=default_bg, fg=default_fg, relief=tk.FLAT, font=("Arial", 10, "bold"),
+                               bg=self.default_bg, fg=self.default_fg, relief=tk.FLAT, font=("Arial", 10, "bold"),
                                width=2, height=1)
         new_tab_btn.pack(side=tk.BOTTOM, pady=2)
         
@@ -117,11 +95,11 @@ class TopMostEditor:
         self.editor_frame.pack(fill=tk.BOTH, expand=True)
         
         # 创建文本编辑器（移除独立行号组件）
-        self.text_frame = tk.Frame(self.editor_frame, bg=default_bg)
+        self.text_frame = tk.Frame(self.editor_frame, bg=self.default_bg)
         self.text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.text_editor = tk.Text(self.text_frame, wrap=tk.WORD, undo=True, padx=5, pady=5, 
-                              bg=default_bg, fg=default_fg, insertbackground=default_fg)
+                              bg=self.default_bg, fg=self.default_fg, insertbackground=self.default_fg)
         self.text_editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # 初始化内嵌行号相关变量
@@ -133,20 +111,34 @@ class TopMostEditor:
         self.text_editor.insert("1.0", default_lines)
         self.text_editor.mark_set(tk.INSERT, "1.0")  # 将光标设置到第一行
         
+        # 创建ttk样式用于滚动条
+        style = ttk.Style()
+        style.theme_use('clam')  # 使用clam主题以支持颜色自定义
+        style.configure("Custom.Vertical.TScrollbar", 
+                       background=self.default_bg,
+                       troughcolor=self.default_bg,
+                       bordercolor=self.default_bg,
+                       arrowcolor=self.default_fg,
+                       darkcolor=self.default_bg,
+                       lightcolor=self.default_bg)
+        
         # 创建并添加滚动条
-        self.scrollbar_y = tk.Scrollbar(self.text_frame, orient=tk.VERTICAL, command=self.text_editor.yview,
-                                   bg=default_bg)
+        self.scrollbar_y = ttk.Scrollbar(self.text_frame, orient=tk.VERTICAL, command=self.text_editor.yview,
+                                        style="Custom.Vertical.TScrollbar")
         self.scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
         self.text_editor.config(yscrollcommand=self.scrollbar_y.set)
         
+        # 创建拖拽Canvas覆盖层（初始时隐藏）
+        self.create_drag_canvas()
+        
         # 创建状态栏
         self.status_bar = tk.Label(self.root, text="行: 1 | 列: 0", bd=1, relief=tk.SUNKEN, anchor=tk.W,
-                              bg=default_bg, fg=default_fg)
+                              bg=self.default_bg, fg=self.default_fg)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
         # 设置其他框架的背景色
-        self.main_frame.configure(bg=default_bg)
-        self.editor_frame.configure(bg=default_bg)
+        self.main_frame.configure(bg=self.default_bg)
+        self.editor_frame.configure(bg=self.default_bg)
         
         # 配置编辑器字体
         self.default_font = font.Font(family="Consolas", size=10)
@@ -178,9 +170,164 @@ class TopMostEditor:
         self.root.bind("<Control-s>", lambda event: self.save_file())
         self.root.bind("<Control-Shift-S>", lambda event: self.save_as())
         self.root.bind("<Control-f>", lambda event: self.find_text())
+        self.root.bind("<Control-q>", lambda event: self.exit_app())
+        self.root.bind("<Control-z>", lambda event: self.undo())
+        self.root.bind("<Control-y>", lambda event: self.redo())
+        self.root.bind("<Control-x>", lambda event: self.cut())
+        self.root.bind("<Control-c>", lambda event: self.copy())
+        self.root.bind("<Control-v>", lambda event: self.paste())
         
         # 设置焦点
         self.text_editor.focus_set()
+    
+    def create_custom_title_bar(self):
+        """创建自定义标题栏"""
+        self.title_bar = tk.Frame(self.root, bg=self.default_bg, height=30)
+        self.title_bar.pack(fill=tk.X, side=tk.TOP)
+        self.title_bar.pack_propagate(False)
+        
+        # 标题文字
+        self.title_label = tk.Label(self.title_bar, text="缓冲编辑器（强制置顶）", 
+                                   bg=self.default_bg, fg=self.default_fg, font=("Arial", 9))
+        self.title_label.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        # 窗口控制按钮框架
+        button_frame = tk.Frame(self.title_bar, bg=self.default_bg)
+        button_frame.pack(side=tk.RIGHT, padx=5)
+        
+        # 关闭按钮
+        close_btn = tk.Button(button_frame, text="×", bg=self.default_bg, fg=self.default_fg,
+                             relief=tk.FLAT, width=3, command=self.exit_app)
+        close_btn.pack(side=tk.RIGHT, padx=2)
+        
+        # 最大化按钮
+        maximize_btn = tk.Button(button_frame, text="□", bg=self.default_bg, fg=self.default_fg,
+                                relief=tk.FLAT, width=3, command=self.toggle_maximize)
+        maximize_btn.pack(side=tk.RIGHT, padx=2)
+        
+        # 最小化按钮
+        minimize_btn = tk.Button(button_frame, text="—", bg=self.default_bg, fg=self.default_fg,
+                                relief=tk.FLAT, width=3, command=self.minimize_window)
+        minimize_btn.pack(side=tk.RIGHT, padx=2)
+        
+        # 绑定拖拽事件
+        self.title_bar.bind("<Button-1>", self.start_drag)
+        self.title_bar.bind("<B1-Motion>", self.drag_window)
+        self.title_label.bind("<Button-1>", self.start_drag)
+        self.title_label.bind("<B1-Motion>", self.drag_window)
+        
+        # 存储拖拽起始位置
+        self.drag_start_x = 0
+        self.drag_start_y = 0
+        self.is_maximized = False
+    
+    def create_drag_canvas(self):
+        """创建用于图片自由拖拽的Canvas覆盖层"""
+        self.drag_canvas = tk.Canvas(self.text_frame, highlightthickness=0, 
+                                   bg=self.default_bg, bd=0)
+        # 初始时不显示Canvas
+        self.drag_canvas.place_forget()
+    
+    def start_drag(self, event):
+        """开始拖拽窗口"""
+        self.drag_start_x = event.x_root - self.root.winfo_x()
+        self.drag_start_y = event.y_root - self.root.winfo_y()
+    
+    def drag_window(self, event):
+        """拖拽窗口"""
+        if not self.is_maximized:
+            x = event.x_root - self.drag_start_x
+            y = event.y_root - self.drag_start_y
+            self.root.geometry(f"+{x}+{y}")
+    
+    def minimize_window(self):
+        """最小化窗口"""
+        # 通过父窗口实现最小化
+        parent = self.root.master
+        if parent:
+            parent.iconify()
+        else:
+            self.root.withdraw()
+    
+
+    
+    def toggle_maximize(self):
+        """切换最大化状态"""
+        if self.is_maximized:
+            self.root.state('normal')
+            self.is_maximized = False
+        else:
+            self.root.state('zoomed')
+            self.is_maximized = True
+
+    def create_custom_menu_buttons(self):
+        """创建自定义菜单按钮"""
+        # 文件菜单按钮
+        file_btn = tk.Menubutton(self.custom_menu_frame, text="文件", 
+                                bg=self.default_bg, fg=self.default_fg, 
+                                relief=tk.FLAT, padx=10)
+        file_btn.pack(side=tk.LEFT)
+        
+        file_menu = tk.Menu(file_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
+        file_menu.add_command(label="新建 (Ctrl+N)", command=self.new_file)
+        file_menu.add_command(label="打开 (Ctrl+O)", command=self.open_file)
+        file_menu.add_command(label="保存 (Ctrl+S)", command=self.save_file)
+        file_menu.add_command(label="另存为 (Ctrl+Shift+S)", command=self.save_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出 (Ctrl+Q)", command=self.exit_app)
+        file_btn.config(menu=file_menu)
+        
+        # 编辑菜单按钮
+        edit_btn = tk.Menubutton(self.custom_menu_frame, text="编辑", 
+                                bg=self.default_bg, fg=self.default_fg, 
+                                relief=tk.FLAT, padx=10)
+        edit_btn.pack(side=tk.LEFT)
+        
+        edit_menu = tk.Menu(edit_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
+        edit_menu.add_command(label="撤销 (Ctrl+Z)", command=self.undo)
+        edit_menu.add_command(label="重做 (Ctrl+Y)", command=self.redo)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="剪切 (Ctrl+X)", command=self.cut)
+        edit_menu.add_command(label="复制 (Ctrl+C)", command=self.copy)
+        edit_menu.add_command(label="粘贴 (Ctrl+V)", command=self.paste)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="查找 (Ctrl+F)", command=self.find_text)
+        edit_btn.config(menu=edit_menu)
+        
+        # 插入菜单按钮
+        insert_btn = tk.Menubutton(self.custom_menu_frame, text="插入", 
+                                  bg=self.default_bg, fg=self.default_fg, 
+                                  relief=tk.FLAT, padx=10)
+        insert_btn.pack(side=tk.LEFT)
+        
+        insert_menu = tk.Menu(insert_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
+        if PIL_AVAILABLE:
+            insert_menu.add_command(label="插入图片", command=self.insert_image)
+        else:
+            insert_menu.add_command(label="插入图片 (需要安装PIL)", command=self.show_pil_warning, state="disabled")
+        insert_btn.config(menu=insert_menu)
+        
+        # 格式菜单按钮
+        format_btn = tk.Menubutton(self.custom_menu_frame, text="格式", 
+                                  bg=self.default_bg, fg=self.default_fg, 
+                                  relief=tk.FLAT, padx=10)
+        format_btn.pack(side=tk.LEFT)
+        
+        format_menu = tk.Menu(format_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
+        format_menu.add_command(label="文字颜色", command=self.change_text_color)
+        format_menu.add_command(label="背景颜色", command=self.change_bg_color)
+        format_menu.add_command(label="字体选择", command=self.change_font)
+        format_btn.config(menu=format_menu)
+        
+        # 查看菜单按钮
+        view_btn = tk.Menubutton(self.custom_menu_frame, text="查看", 
+                                bg=self.default_bg, fg=self.default_fg, 
+                                relief=tk.FLAT, padx=10)
+        view_btn.pack(side=tk.LEFT)
+        
+        view_menu = tk.Menu(view_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
+        view_menu.add_command(label="显示行号", command=self.toggle_line_numbers)
+        view_btn.config(menu=view_menu)
     
     def create_new_tab(self, title="新建文档"):
         """创建新的标签页"""
@@ -208,19 +355,26 @@ class TopMostEditor:
         
         # 切换到新标签页
         self.switch_to_tab(len(self.tabs) - 1)
+        
+        # 为新标签页添加默认空行
+        default_lines = "\n" * 60
+        self.text_editor.insert("1.0", default_lines)
+        self.text_editor.mark_set(tk.INSERT, "1.0")  # 将光标设置到第一行
+        
+        # 更新行号显示
+        if self.show_line_numbers:
+            self.update_line_numbers()
     
     def create_tab_ui(self, tab_index):
         """创建书签式标签页的UI元素"""
         tab_data = self.tabs[tab_index]
         
-        # 创建书签式标签页（只显示序号）
-        tab_number = str(tab_index + 1)
-        if tab_data['modified']:
-            tab_number = '*' + tab_number
+        # 创建书签式标签页（显示标题第一个字符）
+        tab_display = tab_data['title'][0] if tab_data['title'] else str(tab_index + 1)
         
-        tab_btn = tk.Button(self.tab_container, text=tab_number,
+        tab_btn = tk.Button(self.tab_container, text=tab_display,
                            command=lambda: self.switch_to_tab(tab_index),
-                           bg="#A0A0A0", fg="#3D2914", relief=tk.RAISED,
+                           bg=self.default_bg, fg=self.default_fg, relief=tk.RAISED,
                            font=("Arial", 8, "bold"), width=2, height=1,
                            bd=1)
         tab_btn.pack(pady=1)
@@ -239,6 +393,9 @@ class TopMostEditor:
         """切换到指定标签页"""
         if tab_index < 0 or tab_index >= len(self.tabs):
             return
+        
+        # 清理拖拽Canvas状态
+        self.cleanup_drag_canvas()
         
         # 保存当前标签页状态
         if self.tabs and self.current_tab_index < len(self.tabs):
@@ -268,22 +425,35 @@ class TopMostEditor:
         if not self.tabs or self.current_tab_index >= len(self.tabs):
             return
             
+        # 检查text_editor是否仍然有效
+        try:
+            if not hasattr(self, 'text_editor') or not self.text_editor.winfo_exists():
+                return
+        except tk.TclError:
+            return
+            
         current_tab = self.tabs[self.current_tab_index]
         
-        # 保存内容
-        current_tab['content'] = self.text_editor.get(1.0, tk.END)
-        
-        # 保存光标位置
-        current_tab['cursor_pos'] = self.text_editor.index(tk.INSERT)
-        
-        # 保存修改状态
-        current_tab['modified'] = self.text_editor.edit_modified()
-        
-        # 保存图片信息
-        if hasattr(self, 'images'):
-            current_tab['images'] = self.images.copy()
-        if hasattr(self, 'image_info'):
-            current_tab['image_info'] = self.image_info.copy()
+        try:
+            # 保存内容
+            current_tab['content'] = self.text_editor.get(1.0, tk.END)
+            
+            # 保存光标位置
+            current_tab['cursor_pos'] = self.text_editor.index(tk.INSERT)
+            
+            # 保存修改状态
+            current_tab['modified'] = self.text_editor.edit_modified()
+            
+            # 保存图片信息
+            if hasattr(self, 'images'):
+                current_tab['images'] = self.images.copy()
+            if hasattr(self, 'image_info'):
+                current_tab['image_info'] = self.image_info.copy()
+            if hasattr(self, 'floating_images'):
+                current_tab['floating_images'] = list(self.floating_images.keys())
+        except tk.TclError:
+            # 如果组件已被销毁，跳过保存
+            pass
     
     def load_tab_content(self, tab_data):
         """加载标签页内容"""
@@ -310,8 +480,41 @@ class TopMostEditor:
         else:
             self.image_info = {}
             
-        self.images = tab_data['images'].copy()
-        self.image_info = tab_data['image_info'].copy()
+        # 清理现有浮动图片
+        if hasattr(self, 'floating_images'):
+            for image_label in self.floating_images.values():
+                image_label.destroy()
+            self.floating_images.clear()
+        else:
+            self.floating_images = {}
+        
+        # 复制图片数据
+        if 'images' in tab_data:
+            self.images = tab_data['images'].copy()
+        if 'image_info' in tab_data:
+            self.image_info = tab_data['image_info'].copy()
+            
+            # 重新创建浮动图片
+            for image_name, info in self.image_info.items():
+                if 'label' in info:  # 这是浮动图片
+                    try:
+                        # 创建新的Label
+                        image_label = tk.Label(self.text_editor, image=info['photo'], bg='white', relief='solid', bd=1)
+                        x = info.get('x', 10)
+                        y = info.get('y', 10)
+                        image_label.place(x=x, y=y)
+                        
+                        # 更新引用
+                        self.floating_images[image_name] = image_label
+                        info['label'] = image_label
+                        
+                        # 重新绑定事件
+                        self.bind_floating_image_context_menu(image_name)
+                        if info.get('draggable', False):
+                            self.toggle_floating_image_draggable(image_name, True)
+                    except Exception:
+                        # 如果创建失败，跳过这个图片
+                        continue
         
         # 设置修改状态
         self.text_editor.edit_modified(tab_data['modified'])
@@ -321,13 +524,22 @@ class TopMostEditor:
     
     def update_tab_ui_states(self):
         """更新所有标签页的UI状态"""
+        # 创建活动标签页的颜色（稍微深一点）
+        active_bg = "#8A8A8A"  # 比default_bg稍深的颜色
+        
         for i, tab in enumerate(self.tabs):
-            if i == self.current_tab_index:
-                # 当前活动标签页
-                tab['ui_button'].config(bg="#8A8A8A", relief=tk.SUNKEN)
-            else:
-                # 非活动标签页
-                tab['ui_button'].config(bg="#A0A0A0", relief=tk.RAISED)
+            try:
+                # 检查UI组件是否仍然有效
+                if 'ui_button' in tab and tab['ui_button'].winfo_exists():
+                    if i == self.current_tab_index:
+                        # 当前活动标签页
+                        tab['ui_button'].config(bg=active_bg, relief=tk.SUNKEN)
+                    else:
+                        # 非活动标签页
+                        tab['ui_button'].config(bg=self.default_bg, relief=tk.RAISED)
+            except tk.TclError:
+                # 如果组件已被销毁，跳过更新
+                continue
     
     def show_tooltip(self, event, text):
         """显示工具提示"""
@@ -398,6 +610,8 @@ class TopMostEditor:
                     if tab_data['modified']:
                         title = '*' + title
                     self.root.title(f"缓冲编辑器（强制置顶） - {title}")
+                # 刷新所有标签页UI以更新显示
+                self.refresh_all_tabs_ui()
             dialog.destroy()
         
         def cancel_rename():
@@ -501,9 +715,9 @@ class TopMostEditor:
                     current_tab['title'] = os.path.basename(file_path)
                     current_tab['modified'] = False
                     
-                    # 更新标签页UI（书签式显示序号）
-                    tab_number = str(self.current_tab_index + 1)
-                    current_tab['ui_button'].config(text=tab_number)
+                    # 更新标签页UI（书签式显示标题第一个字符）
+                    tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                    current_tab['ui_button'].config(text=tab_display)
                     
                     self.filename = file_path
                     self.root.title(f"缓冲编辑器（强制置顶） - {os.path.basename(file_path)}")
@@ -547,6 +761,14 @@ class TopMostEditor:
         text_content = data.get('text', '')
         self.text_editor.insert(1.0, text_content)
         
+        # 清理现有浮动图片
+        if hasattr(self, 'floating_images'):
+            for image_label in self.floating_images.values():
+                image_label.destroy()
+            self.floating_images.clear()
+        else:
+            self.floating_images = {}
+        
         # 恢复图片
         images_data = data.get('images', [])
         for img_data in images_data:
@@ -559,30 +781,67 @@ class TopMostEditor:
                 # 创建PhotoImage
                 photo = ImageTk.PhotoImage(image)
                 
-                # 在指定位置插入图片
-                position = img_data['position']
-                try:
-                    # 尝试在原位置插入
-                    image_name = self.text_editor.image_create(position, image=photo)
-                except tk.TclError:
-                    # 如果原位置无效，在末尾插入
-                    image_name = self.text_editor.image_create(tk.END, image=photo)
+                # 生成唯一的图片名称
+                import time
+                image_name = f"image_{int(time.time() * 1000000)}"
                 
-                # 保存图片信息
-                self.images.append(photo)
-                self.image_info[image_name] = {
-                    'photo': photo,
-                    'draggable': img_data.get('draggable', False),
-                    'file_path': img_data.get('file_path', ''),
-                    'original_image': image
-                }
+                # 根据图片类型进行不同处理
+                image_type = img_data.get('type', 'embedded')  # 默认为嵌入式图片（向后兼容）
                 
-                # 绑定右键菜单
-                self.bind_image_context_menu(image_name)
-                
-                # 如果图片可拖动，启用拖动功能
-                if img_data.get('draggable', False):
-                    self.toggle_image_draggable(image_name, True)
+                if image_type == 'floating':  # 浮动图片
+                    # 创建浮动Label
+                    image_label = tk.Label(self.text_editor, image=photo, bg='white', relief='solid', bd=1)
+                    x = img_data.get('x', 10)
+                    y = img_data.get('y', 10)
+                    image_label.place(x=x, y=y)
+                    
+                    # 保存图片信息
+                    self.images.append(photo)
+                    self.floating_images[image_name] = image_label
+                    self.image_info[image_name] = {
+                        'photo': photo,
+                        'draggable': img_data.get('draggable', False),
+                        'file_path': img_data.get('file_path', ''),
+                        'original_image': image,
+                        'label': image_label,
+                        'x': x,
+                        'y': y
+                    }
+                    
+                    # 绑定右键菜单
+                    self.bind_floating_image_context_menu(image_name)
+                    
+                    # 如果图片可拖动，启用拖动功能
+                    if img_data.get('draggable', False):
+                        self.toggle_floating_image_draggable(image_name, True)
+                        
+                else:  # 传统嵌入式图片
+                    # 在指定位置插入图片
+                    position = img_data.get('position', '1.0')
+                    try:
+                        # 尝试在原位置插入
+                        image_name = self.text_editor.image_create(position, image=photo)
+                    except tk.TclError:
+                        # 如果原位置无效，在末尾插入
+                        image_name = self.text_editor.image_create(tk.END, image=photo)
+                    
+                    # 保存图片信息
+                    self.images.append(photo)
+                    self.image_info[image_name] = {
+                        'photo': photo,
+                        'draggable': img_data.get('draggable', False),
+                        'file_path': img_data.get('file_path', ''),
+                        'original_image': image,
+                        'x_offset': img_data.get('x_offset', 0),
+                        'y_offset': img_data.get('y_offset', 0)
+                    }
+                    
+                    # 绑定右键菜单
+                    self.bind_image_context_menu(image_name)
+                    
+                    # 如果图片可拖动，启用拖动功能
+                    if img_data.get('draggable', False):
+                        self.toggle_image_draggable(image_name, True)
                     
             except Exception as e:
                 print(f"恢复图片时出错: {e}")
@@ -605,9 +864,9 @@ class TopMostEditor:
                     current_tab['modified'] = False
                     current_tab['title'] = os.path.basename(self.filename)
                     
-                    # 更新标签页UI（书签式显示序号）
-                    tab_number = str(self.current_tab_index + 1)
-                    current_tab['ui_button'].config(text=tab_number)
+                    # 更新标签页UI（书签式显示标题第一个字符）
+                    tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                    current_tab['ui_button'].config(text=tab_display)
                 
                 return result
             except Exception as e:
@@ -651,21 +910,39 @@ class TopMostEditor:
         if hasattr(self, 'image_info'):
             for image_name, image_info in self.image_info.items():
                 try:
-                    # 获取图片在文本中的位置
-                    image_pos = self.text_editor.index(image_name)
-                    
                     # 将图片转换为base64
                     original_image = image_info['original_image']
                     buffer = BytesIO()
                     original_image.save(buffer, format='PNG')
                     image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
                     
-                    save_data['images'].append({
-                        'position': image_pos,
+                    image_data = {
                         'file_path': image_info['file_path'],
                         'image_data': image_base64,
                         'draggable': image_info['draggable']
-                    })
+                    }
+                    
+                    # 检查是否为浮动图片
+                    if 'label' in image_info:  # 浮动图片
+                        image_data.update({
+                            'type': 'floating',
+                            'x': image_info.get('x', 10),
+                            'y': image_info.get('y', 10)
+                        })
+                    else:  # 传统图片（插入到文本编辑器中）
+                        try:
+                            image_pos = self.text_editor.index(image_name)
+                            image_data.update({
+                                'type': 'embedded',
+                                'position': image_pos,
+                                'x_offset': image_info.get('x_offset', 0),
+                                'y_offset': image_info.get('y_offset', 0)
+                            })
+                        except tk.TclError:
+                            # 如果无法获取位置，跳过这个图片
+                            continue
+                    
+                    save_data['images'].append(image_data)
                 except Exception as e:
                     print(f"保存图片时出错: {e}")
         
@@ -714,15 +991,27 @@ class TopMostEditor:
             current_tab['filename'] = file_path
             current_tab['title'] = os.path.basename(file_path)
             
-            # 更新标签页UI（书签式显示序号）
-            tab_number = str(self.current_tab_index + 1)
-            current_tab['ui_button'].config(text=tab_number)
+            # 更新标签页UI（书签式显示标题第一个字符）
+            tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+            current_tab['ui_button'].config(text=tab_display)
             
             self.root.title(f"缓冲编辑器（强制置顶） - {os.path.basename(file_path)}")
             return self.save_file()
         return False
     
     def exit_app(self):
+        # 清理拖拽Canvas状态
+        self.cleanup_drag_canvas()
+        
+        # 清理浮动图片
+        if hasattr(self, 'floating_images'):
+            for image_label in self.floating_images.values():
+                try:
+                    image_label.destroy()
+                except tk.TclError:
+                    pass
+            self.floating_images.clear()
+        
         # 检查所有标签页是否有未保存的更改
         for i, tab in enumerate(self.tabs):
             if tab['modified']:
@@ -735,7 +1024,12 @@ class TopMostEditor:
                     if not self.save_file():
                         return
         
+        # 关闭主窗口
         self.root.destroy()
+        
+        # 如果有父窗口引用，也关闭父窗口
+        if self.parent_window and self.parent_window.winfo_exists():
+            self.parent_window.destroy()
     
     def check_save_changes(self):
         if self.text_editor.edit_modified():
@@ -811,9 +1105,23 @@ class TopMostEditor:
                 # 转换为PhotoImage
                 photo = ImageTk.PhotoImage(image)
                 
-                # 在当前光标位置插入图片
+                # 创建浮动图片Label
+                image_label = tk.Label(self.text_editor, image=photo, bg='white', relief='solid', bd=1)
+                
+                # 获取插入位置
                 cursor_pos = self.text_editor.index(tk.INSERT)
-                image_name = self.text_editor.image_create(cursor_pos, image=photo)
+                bbox = self.text_editor.bbox(cursor_pos)
+                if bbox:
+                    x, y, width, height = bbox
+                else:
+                    x, y = 10, 10
+                
+                # 放置图片Label
+                image_label.place(x=x, y=y)
+                
+                # 生成唯一的图片名称
+                import time
+                image_name = f"floating_image_{int(time.time() * 1000)}"
                 
                 # 保存图片引用和信息，防止被垃圾回收
                 if not hasattr(self, 'images'):
@@ -822,21 +1130,53 @@ class TopMostEditor:
                     self.image_info = {}
                     
                 self.images.append(photo)
+                self.floating_images[image_name] = image_label
                 self.image_info[image_name] = {
                     'photo': photo,
                     'draggable': False,
                     'file_path': file_path,
-                    'original_image': image
+                    'original_image': image,
+                    'x': x,
+                    'y': y,
+                    'label': image_label
                 }
                 
                 # 为图片绑定右键菜单
-                self.bind_image_context_menu(image_name)
-                
-                # 在图片后添加换行
-                self.text_editor.insert(tk.INSERT, "\n")
+                self.bind_floating_image_context_menu(image_name)
                 
             except Exception as e:
                 messagebox.showerror("错误", f"无法插入图片: {str(e)}")
+    
+    def bind_floating_image_context_menu(self, image_name):
+        """为浮动图片绑定右键菜单和拖拽功能"""
+        image_label = self.floating_images[image_name]
+        
+        def on_image_right_click(event):
+            # 创建右键菜单
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
+            # 检查当前拖拽状态
+            is_draggable = self.image_info[image_name].get('draggable', False)
+            drag_text = "禁用拖动" if is_draggable else "启用拖动"
+            
+            context_menu.add_command(
+                label=drag_text,
+                command=lambda: self.toggle_floating_image_draggable(image_name, not is_draggable)
+            )
+            context_menu.add_separator()
+            context_menu.add_command(
+                label="删除图片",
+                command=lambda: self.delete_floating_image(image_name)
+            )
+            
+            # 显示菜单
+            try:
+                context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                context_menu.grab_release()
+        
+        # 绑定右键点击事件
+        image_label.bind("<Button-3>", on_image_right_click)
     
     def bind_image_context_menu(self, image_name):
         """为图片绑定右键菜单"""
@@ -868,6 +1208,27 @@ class TopMostEditor:
         self.text_editor.tag_add(f"image_{image_name}", f"{image_name}", f"{image_name}+1c")
         self.text_editor.tag_bind(f"image_{image_name}", "<Button-3>", on_image_right_click)
     
+    def toggle_floating_image_draggable(self, image_name, draggable):
+        """切换浮动图片的拖拽状态"""
+        if image_name not in self.floating_images:
+            return
+            
+        image_label = self.floating_images[image_name]
+        self.image_info[image_name]['draggable'] = draggable
+        
+        if draggable:
+            # 启用拖动
+            image_label.bind("<Button-1>", lambda e: self.start_floating_image_drag(e, image_name))
+            image_label.bind("<B1-Motion>", lambda e: self.drag_floating_image(e, image_name))
+            image_label.bind("<ButtonRelease-1>", lambda e: self.end_floating_image_drag(e, image_name))
+            image_label.config(cursor="hand2")
+        else:
+            # 禁用拖动
+            image_label.unbind("<Button-1>")
+            image_label.unbind("<B1-Motion>")
+            image_label.unbind("<ButtonRelease-1>")
+            image_label.config(cursor="")
+    
     def toggle_image_draggable(self, image_name, draggable):
         """切换图片的拖动状态"""
         if image_name in self.image_info:
@@ -878,30 +1239,220 @@ class TopMostEditor:
                 self.text_editor.tag_bind(f"image_{image_name}", "<Button-1>", lambda e: self.start_image_drag(e, image_name))
                 self.text_editor.tag_bind(f"image_{image_name}", "<B1-Motion>", lambda e: self.drag_image(e, image_name))
                 self.text_editor.tag_bind(f"image_{image_name}", "<ButtonRelease-1>", lambda e: self.end_image_drag(e, image_name))
-                messagebox.showinfo("提示", "图片拖动已启用，现在可以拖动图片了")
             else:
                 # 禁用拖动
                 self.text_editor.tag_unbind(f"image_{image_name}", "<Button-1>")
                 self.text_editor.tag_unbind(f"image_{image_name}", "<B1-Motion>")
                 self.text_editor.tag_unbind(f"image_{image_name}", "<ButtonRelease-1>")
-                messagebox.showinfo("提示", "图片拖动已禁用")
     
-    def start_image_drag(self, event, image_name):
-        """开始拖动图片"""
+    def start_floating_image_drag(self, event, image_name):
+        """开始拖拽浮动图片"""
         self.drag_data = {
             'image_name': image_name,
             'start_x': event.x,
             'start_y': event.y
         }
     
+    def drag_floating_image(self, event, image_name):
+        """拖拽浮动图片过程中"""
+        if not hasattr(self, 'drag_data') or not self.drag_data:
+            return
+            
+        if self.drag_data['image_name'] != image_name:
+            return
+            
+        # 计算移动距离
+        dx = event.x - self.drag_data['start_x']
+        dy = event.y - self.drag_data['start_y']
+        
+        # 获取当前位置
+        image_label = self.floating_images[image_name]
+        current_x = image_label.winfo_x()
+        current_y = image_label.winfo_y()
+        
+        # 计算新位置
+        new_x = current_x + dx
+        new_y = current_y + dy
+        
+        # 确保图片不会拖出编辑器边界
+        editor_width = self.text_editor.winfo_width()
+        editor_height = self.text_editor.winfo_height()
+        image_width = image_label.winfo_width()
+        image_height = image_label.winfo_height()
+        
+        new_x = max(0, min(new_x, editor_width - image_width))
+        new_y = max(0, min(new_y, editor_height - image_height))
+        
+        # 移动图片
+        image_label.place(x=new_x, y=new_y)
+        
+        # 更新图片信息
+        self.image_info[image_name]['x'] = new_x
+        self.image_info[image_name]['y'] = new_y
+    
+    def end_floating_image_drag(self, event, image_name):
+        """结束拖拽浮动图片"""
+        self.drag_data = None
+    
+    def start_image_drag(self, event, image_name):
+        """开始拖动图片"""
+        # 检查是否为浮动图片，如果是则不处理（浮动图片有自己的拖拽方法）
+        if image_name in self.image_info and 'label' in self.image_info[image_name]:
+            return
+            
+        try:
+            original_pos = self.text_editor.index(image_name)
+        except tk.TclError:
+            # 如果无法获取位置，可能是浮动图片，直接返回
+            return
+            
+        self.drag_data = {
+            'image_name': image_name,
+            'start_x': event.x,
+            'start_y': event.y,
+            'original_pos': original_pos
+        }
+        
+        # 激活Canvas覆盖层进行自由拖拽
+        if self.drag_canvas:
+            # 获取文本编辑器的尺寸和位置
+            self.text_editor.update_idletasks()
+            x = self.text_editor.winfo_x()
+            y = self.text_editor.winfo_y()
+            width = self.text_editor.winfo_width()
+            height = self.text_editor.winfo_height()
+            
+            # 显示Canvas覆盖层
+            self.drag_canvas.place(x=x, y=y, width=width, height=height)
+            
+            # 在Canvas上创建图片副本用于拖拽显示
+            if image_name in self.image_info:
+                photo = self.image_info[image_name]['photo']
+                self.drag_canvas.delete("drag_image")  # 清除之前的拖拽图片
+                self.drag_canvas.create_image(event.x, event.y, image=photo, tags="drag_image")
+                
+                # 绑定Canvas的鼠标事件
+                self.drag_canvas.bind("<B1-Motion>", lambda e: self.canvas_drag_image(e, image_name))
+                self.drag_canvas.bind("<ButtonRelease-1>", lambda e: self.canvas_end_drag(e, image_name))
+                # 添加Canvas点击事件，用于检测点击空白区域
+                self.drag_canvas.bind("<Button-1>", lambda e: self.canvas_click_handler(e, image_name))
+                self.drag_canvas.focus_set()
+    
     def drag_image(self, event, image_name):
         """拖动图片过程中"""
         if hasattr(self, 'drag_data') and self.drag_data['image_name'] == image_name:
-            # 计算新位置
-            new_pos = self.text_editor.index(f"@{event.x},{event.y}")
-            
-            # 移动图片到新位置
+            # 检查是否为浮动图片，如果是则不处理
+            if image_name in self.image_info and 'label' in self.image_info[image_name]:
+                return
+                
             try:
+                # 计算鼠标移动的距离
+                dx = event.x - self.drag_data['start_x']
+                dy = event.y - self.drag_data['start_y']
+                
+                # 更新图片的偏移量
+                if image_name in self.image_info:
+                    self.image_info[image_name]['x_offset'] = dx
+                    self.image_info[image_name]['y_offset'] = dy
+                    
+                    # 尝试找到最接近的文本位置
+                    try:
+                        new_pos = self.text_editor.index(f"@{event.x},{event.y}")
+                        
+                        # 获取图片对象
+                        photo = self.image_info[image_name]['photo']
+                        
+                        # 删除原位置的图片
+                        current_pos = self.text_editor.index(image_name)
+                        self.text_editor.delete(current_pos)
+                        
+                        # 在新位置插入图片
+                        new_image_name = self.text_editor.image_create(new_pos, image=photo)
+                        
+                        # 更新图片信息
+                        old_info = self.image_info.pop(image_name)
+                        self.image_info[new_image_name] = old_info
+                        
+                        # 重新绑定事件
+                        self.bind_image_context_menu(new_image_name)
+                        if old_info['draggable']:
+                            self.toggle_image_draggable(new_image_name, True)
+                        
+                        # 更新拖动数据
+                        self.drag_data['image_name'] = new_image_name
+                        self.drag_data['start_x'] = event.x
+                        self.drag_data['start_y'] = event.y
+                        
+                    except tk.TclError:
+                        pass  # 忽略无效位置
+                        
+            except Exception as e:
+                pass  # 忽略拖动过程中的错误
+    
+    def canvas_click_handler(self, event, image_name):
+        """处理Canvas点击事件"""
+        # 检查点击位置是否在拖拽图片上
+        items = self.drag_canvas.find_overlapping(event.x-10, event.y-10, event.x+10, event.y+10)
+        drag_image_found = False
+        
+        for item in items:
+            tags = self.drag_canvas.gettags(item)
+            if "drag_image" in tags:
+                drag_image_found = True
+                break
+        
+        # 如果点击的不是拖拽图片，结束拖拽
+        if not drag_image_found:
+            self.canvas_end_drag(event, image_name)
+    
+    def canvas_drag_image(self, event, image_name):
+        """在Canvas上拖拽图片"""
+        if hasattr(self, 'drag_data') and self.drag_data['image_name'] == image_name:
+            # 更新Canvas上的图片位置
+            self.drag_canvas.coords("drag_image", event.x, event.y)
+            
+            # 计算偏移量
+            dx = event.x - self.drag_data['start_x']
+            dy = event.y - self.drag_data['start_y']
+            
+            # 更新图片信息中的偏移量
+            if image_name in self.image_info:
+                self.image_info[image_name]['x_offset'] = dx
+                self.image_info[image_name]['y_offset'] = dy
+    
+    def cleanup_drag_canvas(self):
+        """清理拖拽Canvas状态"""
+        if self.drag_canvas:
+            try:
+                # 解绑所有事件
+                self.drag_canvas.unbind("<B1-Motion>")
+                self.drag_canvas.unbind("<ButtonRelease-1>")
+                self.drag_canvas.unbind("<Button-1>")
+                
+                # 隐藏Canvas覆盖层
+                self.drag_canvas.place_forget()
+                self.drag_canvas.delete("drag_image")
+                
+                # 清理焦点
+                self.text_editor.focus_set()
+            except tk.TclError:
+                pass
+        
+        # 清理拖拽数据
+        self.drag_data = None
+    
+    def canvas_end_drag(self, event, image_name):
+        """结束Canvas拖拽"""
+        if hasattr(self, 'drag_data') and self.drag_data and self.drag_data.get('image_name') == image_name:
+            # 检查是否为浮动图片，如果是则不处理
+            if image_name in self.image_info and 'label' in self.image_info[image_name]:
+                self.cleanup_drag_canvas()
+                return
+                
+            try:
+                # 计算最终位置
+                final_pos = self.text_editor.index(f"@{event.x},{event.y}")
+                
                 # 获取图片对象
                 photo = self.image_info[image_name]['photo']
                 
@@ -910,7 +1461,7 @@ class TopMostEditor:
                 self.text_editor.delete(current_pos)
                 
                 # 在新位置插入图片
-                new_image_name = self.text_editor.image_create(new_pos, image=photo)
+                new_image_name = self.text_editor.image_create(final_pos, image=photo)
                 
                 # 更新图片信息
                 old_info = self.image_info.pop(image_name)
@@ -918,22 +1469,58 @@ class TopMostEditor:
                 
                 # 重新绑定事件
                 self.bind_image_context_menu(new_image_name)
-                if old_info['draggable']:
+                if old_info.get('draggable', False):
                     self.toggle_image_draggable(new_image_name, True)
-                
-                # 更新拖动数据
-                self.drag_data['image_name'] = new_image_name
-                
+                    
             except tk.TclError:
-                pass  # 忽略拖动过程中的错误
+                # 如果无法在新位置插入，恢复到原位置
+                try:
+                    original_pos = self.drag_data['original_pos']
+                    photo = self.image_info[image_name]['photo']
+                    new_image_name = self.text_editor.image_create(original_pos, image=photo)
+                    
+                    # 更新图片信息
+                    old_info = self.image_info.pop(image_name)
+                    self.image_info[new_image_name] = old_info
+                    
+                    # 重新绑定事件
+                    self.bind_image_context_menu(new_image_name)
+                    if old_info.get('draggable', False):
+                        self.toggle_image_draggable(new_image_name, True)
+                except:
+                    pass
+        
+        # 清理Canvas状态
+        self.cleanup_drag_canvas()
     
     def end_image_drag(self, event, image_name):
         """结束拖动图片"""
         if hasattr(self, 'drag_data'):
             del self.drag_data
     
+    def delete_floating_image(self, image_name):
+        """删除浮动图片"""
+        if image_name not in self.floating_images:
+            return
+            
+        response = messagebox.askyesno("确认删除", "确定要删除这张图片吗？")
+        if response:
+            # 销毁Label组件
+            image_label = self.floating_images[image_name]
+            image_label.destroy()
+            
+            # 清理数据
+            del self.floating_images[image_name]
+            if image_name in self.image_info:
+                del self.image_info[image_name]
+    
     def delete_image(self, image_name):
         """删除图片"""
+        # 检查是否为浮动图片，如果是则调用专门的删除方法
+        if image_name in self.image_info and 'label' in self.image_info[image_name]:
+            self.delete_floating_image(image_name)
+            return
+            
         try:
             # 删除文本中的图片
             current_pos = self.text_editor.index(image_name)
@@ -1172,9 +1759,10 @@ class TopMostEditor:
             
             # 如果该行为空或只有空白字符，显示行号
             if not line_content.strip():
-                # 创建行号Label
+                # 创建行号Label（使用较浅的前景色）
+                line_number_fg = "#CCCCCC"  # 行号的前景色
                 line_label = tk.Label(self.text_editor, text=f"{line_num:3d}", 
-                                    fg="#CCCCCC", bg=self.text_editor.cget("bg"),
+                                    fg=line_number_fg, bg=self.text_editor.cget("bg"),
                                     font=("Arial", 8), anchor="e", width=3)
                 
                 # 在行首嵌入Label
@@ -1207,9 +1795,10 @@ class TopMostEditor:
             
             # 如果该行为空且没有行号，添加行号
             if not line_content.strip() and not has_line_number:
-                # 创建行号Label
+                # 创建行号Label（使用较浅的前景色）
+                line_number_fg = "#CCCCCC"  # 行号的前景色
                 line_label = tk.Label(self.text_editor, text=f"{line_num:3d}", 
-                                    fg="#CCCCCC", bg=self.text_editor.cget("bg"),
+                                    fg=line_number_fg, bg=self.text_editor.cget("bg"),
                                     font=("Arial", 8), anchor="e", width=3)
                 
                 # 在行首嵌入Label
@@ -1256,10 +1845,9 @@ class TopMostEditor:
                 current_tab = self.tabs[self.current_tab_index]
                 current_tab['modified'] = True
                 
-                # 更新标签页UI显示（书签式显示序号）
-                tab_number = str(self.current_tab_index + 1)
-                if not tab_number.startswith('*'):
-                    current_tab['ui_button'].config(text='*' + tab_number)
+                # 标签页按钮不显示修改状态，保持原有显示
+                # tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                # current_tab['ui_button'].config(text=tab_display)
             
             # 更新窗口标题
             if self.root.title()[0] != '*':
@@ -1292,7 +1880,34 @@ class TopMostEditor:
                 self.text_editor.tag_add(tag, start, end)
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    # 创建父窗口用于任务栏显示
+    hidden_root = tk.Tk()
+    hidden_root.title("缓冲编辑器（强制置顶）")
+    hidden_root.geometry("1x1+0+0")  # 设置为最小尺寸并移到角落
+    hidden_root.attributes('-alpha', 0.01)  # 设置为几乎透明
+    
+    # 创建主窗口作为子窗口
+    root = tk.Toplevel(hidden_root)
     editor = TopMostEditor(root)
-    root.protocol("WM_DELETE_WINDOW", editor.exit_app)
+    editor.parent_window = hidden_root  # 设置父窗口引用
+    
+    # 设置关闭事件处理
+    def on_closing():
+        editor.exit_app()
+        hidden_root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    hidden_root.protocol("WM_DELETE_WINDOW", on_closing)
+    
+    # 绑定父窗口的最小化事件到子窗口
+    def on_parent_iconify(event=None):
+        root.withdraw()
+    
+    def on_parent_deiconify(event=None):
+        root.deiconify()
+        root.lift()
+    
+    hidden_root.bind('<Unmap>', on_parent_iconify)
+    hidden_root.bind('<Map>', on_parent_deiconify)
+    
     root.mainloop()
