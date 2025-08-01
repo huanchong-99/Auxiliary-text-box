@@ -344,7 +344,8 @@ class TopMostEditor:
             'images': [],
             'image_info': {},
             'modified': False,
-            'cursor_pos': '1.0'
+            'cursor_pos': '1.0',
+            'custom_color': None  # 自定义颜色
         }
         
         # 添加到标签页列表
@@ -372,9 +373,13 @@ class TopMostEditor:
         # 创建书签式标签页（显示标题第一个字符）
         tab_display = tab_data['title'][0] if tab_data['title'] else str(tab_index + 1)
         
+        # 确定标签页颜色
+        bg_color = tab_data.get('custom_color', self.default_bg)
+        fg_color = self.get_contrast_color(bg_color) if tab_data.get('custom_color') else self.default_fg
+        
         tab_btn = tk.Button(self.tab_container, text=tab_display,
                            command=lambda: self.switch_to_tab(tab_index),
-                           bg=self.default_bg, fg=self.default_fg, relief=tk.RAISED,
+                           bg=bg_color, fg=fg_color, relief=tk.RAISED,
                            font=("Arial", 8, "bold"), width=2, height=1,
                            bd=1)
         tab_btn.pack(pady=1)
@@ -524,19 +529,31 @@ class TopMostEditor:
     
     def update_tab_ui_states(self):
         """更新所有标签页的UI状态"""
-        # 创建活动标签页的颜色（稍微深一点）
-        active_bg = "#8A8A8A"  # 比default_bg稍深的颜色
-        
         for i, tab in enumerate(self.tabs):
             try:
                 # 检查UI组件是否仍然有效
                 if 'ui_button' in tab and tab['ui_button'].winfo_exists():
+                    # 获取标签页的自定义颜色或默认颜色
+                    custom_color = tab.get('custom_color')
+                    
                     if i == self.current_tab_index:
                         # 当前活动标签页
-                        tab['ui_button'].config(bg=active_bg, relief=tk.SUNKEN)
+                        if custom_color:
+                            # 如果有自定义颜色，使其稍微深一点表示活动状态
+                            active_color = self.darken_color(custom_color, 0.8)
+                            text_color = self.get_contrast_color(active_color)
+                            tab['ui_button'].config(bg=active_color, fg=text_color, relief=tk.SUNKEN)
+                        else:
+                            # 使用默认的活动颜色
+                            active_bg = "#8A8A8A"
+                            tab['ui_button'].config(bg=active_bg, fg=self.default_fg, relief=tk.SUNKEN)
                     else:
                         # 非活动标签页
-                        tab['ui_button'].config(bg=self.default_bg, relief=tk.RAISED)
+                        if custom_color:
+                            text_color = self.get_contrast_color(custom_color)
+                            tab['ui_button'].config(bg=custom_color, fg=text_color, relief=tk.RAISED)
+                        else:
+                            tab['ui_button'].config(bg=self.default_bg, fg=self.default_fg, relief=tk.RAISED)
             except tk.TclError:
                 # 如果组件已被销毁，跳过更新
                 continue
@@ -568,6 +585,7 @@ class TopMostEditor:
         """显示标签页右键菜单"""
         context_menu = tk.Menu(self.root, tearoff=0)
         context_menu.add_command(label="重命名", command=lambda: self.rename_tab(tab_index))
+        context_menu.add_command(label="自定义颜色", command=lambda: self.customize_tab_color(tab_index))
         context_menu.add_separator()
         context_menu.add_command(label="关闭标签页", command=lambda: self.close_tab(tab_index))
         
@@ -575,6 +593,43 @@ class TopMostEditor:
             context_menu.tk_popup(event.x_root, event.y_root)
         finally:
             context_menu.grab_release()
+    
+    def customize_tab_color(self, tab_index):
+        """自定义标签页颜色"""
+        tab_data = self.tabs[tab_index]
+        
+        # 打开颜色选择器
+        color = colorchooser.askcolor(
+            title="选择标签页颜色",
+            initialcolor=tab_data.get('custom_color', '#f0f0f0')
+        )
+        
+        if color[1]:  # 如果用户选择了颜色
+            # 保存颜色到标签页数据
+            tab_data['custom_color'] = color[1]
+            
+            # 应用颜色到标签页按钮
+            self.apply_tab_color(tab_index, color[1])
+            
+            # 更新UI状态
+            self.update_tab_ui_states()
+    
+    def apply_tab_color(self, tab_index, color):
+        """应用颜色到标签页"""
+        tab_data = self.tabs[tab_index]
+        tab_button = tab_data.get('ui_button')
+        
+        if tab_button and tab_button.winfo_exists():
+            try:
+                # 设置背景颜色
+                tab_button.config(bg=color)
+                
+                # 根据背景颜色自动选择合适的文字颜色
+                text_color = self.get_contrast_color(color)
+                tab_button.config(fg=text_color)
+                
+            except tk.TclError:
+                pass
     
     def rename_tab(self, tab_index):
         """重命名标签页"""
@@ -1640,6 +1695,32 @@ class TopMostEditor:
             # 强制更新UI
             self.root.update_idletasks()
     
+    def darken_color(self, hex_color, factor=0.8):
+        """使颜色变深"""
+        try:
+            # 移除#号
+            hex_color = hex_color.lstrip('#')
+            
+            # 转换为RGB
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            
+            # 应用变深因子
+            r = int(r * factor)
+            g = int(g * factor)
+            b = int(b * factor)
+            
+            # 确保值在0-255范围内
+            r = max(0, min(255, r))
+            g = max(0, min(255, g))
+            b = max(0, min(255, b))
+            
+            # 转换回十六进制
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except:
+            return hex_color  # 如果出错，返回原颜色
+    
     def get_contrast_color(self, hex_color):
         """根据背景色计算合适的前景色"""
         # 移除开头的 #
@@ -1654,11 +1735,21 @@ class TopMostEditor:
         # 计算亮度
         brightness = (r * 299 + g * 587 + b * 114) / 1000
         
-        # 根据亮度决定文本颜色
+        # 根据亮度动态计算字体颜色，实现自然过渡
         if brightness > 128:
-            return "#000000"  # 黑色
+            # 浅色背景：字体颜色 = 255 - brightness * 0.8
+            font_brightness = int(255 - brightness * 0.8)
+            # 确保值在有效范围内
+            font_brightness = max(0, min(255, font_brightness))
+            hex_value = format(font_brightness, '02x')
+            return f"#{hex_value}{hex_value}{hex_value}"
         else:
-            return "#FFFFFF"  # 白色
+            # 深色背景：字体颜色 = brightness * 1.2 + 100
+            font_brightness = int(brightness * 1.2 + 100)
+            # 确保值在有效范围内
+            font_brightness = max(0, min(255, font_brightness))
+            hex_value = format(font_brightness, '02x')
+            return f"#{hex_value}{hex_value}{hex_value}"
     
     def change_font(self):
         font_window = tk.Toplevel(self.root)
