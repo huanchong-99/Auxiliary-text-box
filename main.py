@@ -177,6 +177,9 @@ class TopMostEditor:
         self.root.bind("<Control-c>", lambda event: self.copy())
         self.root.bind("<Control-v>", lambda event: self.paste())
         
+        # 创建窗口边缘调整大小区域
+        self.create_resize_borders()
+        
         # 设置焦点
         self.text_editor.focus_set()
     
@@ -221,6 +224,152 @@ class TopMostEditor:
         self.drag_start_y = 0
         self.is_maximized = False
     
+    def create_resize_borders(self):
+        """创建窗口边缘调整大小区域"""
+        # 调整大小相关变量
+        self.resize_border_width = 5  # 边框宽度
+        self.is_resizing = False
+        self.resize_direction = None
+        self.resize_start_x = 0
+        self.resize_start_y = 0
+        self.resize_start_width = 0
+        self.resize_start_height = 0
+        
+        # 创建四个边框用于调整大小
+        # 顶部边框
+        self.top_border = tk.Frame(self.root, bg=self.default_bg, height=self.resize_border_width, cursor="sb_v_double_arrow")
+        self.top_border.place(x=0, y=0, relwidth=1)
+        
+        # 底部边框
+        self.bottom_border = tk.Frame(self.root, bg=self.default_bg, height=self.resize_border_width, cursor="sb_v_double_arrow")
+        self.bottom_border.place(x=0, rely=1, y=-self.resize_border_width, relwidth=1)
+        
+        # 左侧边框
+        self.left_border = tk.Frame(self.root, bg=self.default_bg, width=self.resize_border_width, cursor="sb_h_double_arrow")
+        self.left_border.place(x=0, y=0, relheight=1)
+        
+        # 右侧边框
+        self.right_border = tk.Frame(self.root, bg=self.default_bg, width=self.resize_border_width, cursor="sb_h_double_arrow")
+        self.right_border.place(relx=1, x=-self.resize_border_width, y=0, relheight=1)
+        
+        # 四个角落用于对角线调整大小
+        # 左上角
+        self.top_left_corner = tk.Frame(self.root, bg=self.default_bg, width=self.resize_border_width*2, 
+                                       height=self.resize_border_width*2, cursor="size_nw_se")
+        self.top_left_corner.place(x=0, y=0)
+        
+        # 右上角
+        self.top_right_corner = tk.Frame(self.root, bg=self.default_bg, width=self.resize_border_width*2, 
+                                        height=self.resize_border_width*2, cursor="size_ne_sw")
+        self.top_right_corner.place(relx=1, x=-self.resize_border_width*2, y=0)
+        
+        # 左下角
+        self.bottom_left_corner = tk.Frame(self.root, bg=self.default_bg, width=self.resize_border_width*2, 
+                                          height=self.resize_border_width*2, cursor="size_ne_sw")
+        self.bottom_left_corner.place(x=0, rely=1, y=-self.resize_border_width*2)
+        
+        # 右下角
+        self.bottom_right_corner = tk.Frame(self.root, bg=self.default_bg, width=self.resize_border_width*2, 
+                                           height=self.resize_border_width*2, cursor="size_nw_se")
+        self.bottom_right_corner.place(relx=1, x=-self.resize_border_width*2, rely=1, y=-self.resize_border_width*2)
+        
+        # 绑定调整大小事件
+        self.bind_resize_events()
+    
+    def bind_resize_events(self):
+        """绑定调整大小事件"""
+        # 边框事件
+        self.top_border.bind("<Button-1>", lambda e: self.start_resize(e, "top"))
+        self.top_border.bind("<B1-Motion>", self.resize_window)
+        self.top_border.bind("<ButtonRelease-1>", self.end_resize)
+        
+        self.bottom_border.bind("<Button-1>", lambda e: self.start_resize(e, "bottom"))
+        self.bottom_border.bind("<B1-Motion>", self.resize_window)
+        self.bottom_border.bind("<ButtonRelease-1>", self.end_resize)
+        
+        self.left_border.bind("<Button-1>", lambda e: self.start_resize(e, "left"))
+        self.left_border.bind("<B1-Motion>", self.resize_window)
+        self.left_border.bind("<ButtonRelease-1>", self.end_resize)
+        
+        self.right_border.bind("<Button-1>", lambda e: self.start_resize(e, "right"))
+        self.right_border.bind("<B1-Motion>", self.resize_window)
+        self.right_border.bind("<ButtonRelease-1>", self.end_resize)
+        
+        # 角落事件
+        self.top_left_corner.bind("<Button-1>", lambda e: self.start_resize(e, "top_left"))
+        self.top_left_corner.bind("<B1-Motion>", self.resize_window)
+        self.top_left_corner.bind("<ButtonRelease-1>", self.end_resize)
+        
+        self.top_right_corner.bind("<Button-1>", lambda e: self.start_resize(e, "top_right"))
+        self.top_right_corner.bind("<B1-Motion>", self.resize_window)
+        self.top_right_corner.bind("<ButtonRelease-1>", self.end_resize)
+        
+        self.bottom_left_corner.bind("<Button-1>", lambda e: self.start_resize(e, "bottom_left"))
+        self.bottom_left_corner.bind("<B1-Motion>", self.resize_window)
+        self.bottom_left_corner.bind("<ButtonRelease-1>", self.end_resize)
+        
+        self.bottom_right_corner.bind("<Button-1>", lambda e: self.start_resize(e, "bottom_right"))
+        self.bottom_right_corner.bind("<B1-Motion>", self.resize_window)
+        self.bottom_right_corner.bind("<ButtonRelease-1>", self.end_resize)
+    
+    def start_resize(self, event, direction):
+        """开始调整窗口大小"""
+        if self.is_maximized:
+            return  # 最大化状态下不允许调整大小
+            
+        self.is_resizing = True
+        self.resize_direction = direction
+        self.resize_start_x = event.x_root
+        self.resize_start_y = event.y_root
+        self.resize_start_width = self.root.winfo_width()
+        self.resize_start_height = self.root.winfo_height()
+        self.resize_start_window_x = self.root.winfo_x()
+        self.resize_start_window_y = self.root.winfo_y()
+    
+    def resize_window(self, event):
+        """调整窗口大小"""
+        if not self.is_resizing:
+            return
+            
+        dx = event.x_root - self.resize_start_x
+        dy = event.y_root - self.resize_start_y
+        
+        new_width = self.resize_start_width
+        new_height = self.resize_start_height
+        new_x = self.resize_start_window_x
+        new_y = self.resize_start_window_y
+        
+        # 设置最小窗口大小
+        min_width = 300
+        min_height = 200
+        
+        # 根据调整方向计算新的窗口大小和位置
+        if "right" in self.resize_direction:
+            new_width = max(min_width, self.resize_start_width + dx)
+        elif "left" in self.resize_direction:
+            new_width = max(min_width, self.resize_start_width - dx)
+            if new_width > min_width:
+                new_x = self.resize_start_window_x + dx
+            else:
+                new_x = self.resize_start_window_x + (self.resize_start_width - min_width)
+                
+        if "bottom" in self.resize_direction:
+            new_height = max(min_height, self.resize_start_height + dy)
+        elif "top" in self.resize_direction:
+            new_height = max(min_height, self.resize_start_height - dy)
+            if new_height > min_height:
+                new_y = self.resize_start_window_y + dy
+            else:
+                new_y = self.resize_start_window_y + (self.resize_start_height - min_height)
+        
+        # 应用新的窗口大小和位置
+        self.root.geometry(f"{int(new_width)}x{int(new_height)}+{int(new_x)}+{int(new_y)}")
+    
+    def end_resize(self, event):
+        """结束调整窗口大小"""
+        self.is_resizing = False
+        self.resize_direction = None
+    
     def create_drag_canvas(self):
         """创建用于图片自由拖拽的Canvas覆盖层"""
         self.drag_canvas = tk.Canvas(self.text_frame, highlightthickness=0, 
@@ -256,9 +405,37 @@ class TopMostEditor:
         if self.is_maximized:
             self.root.state('normal')
             self.is_maximized = False
+            # 还原时显示调整大小边框
+            self.show_resize_borders()
         else:
             self.root.state('zoomed')
             self.is_maximized = True
+            # 最大化时隐藏调整大小边框
+            self.hide_resize_borders()
+    
+    def show_resize_borders(self):
+        """显示调整大小边框"""
+        if hasattr(self, 'top_border'):
+            self.top_border.place(x=0, y=0, relwidth=1)
+            self.bottom_border.place(x=0, rely=1, y=-self.resize_border_width, relwidth=1)
+            self.left_border.place(x=0, y=0, relheight=1)
+            self.right_border.place(relx=1, x=-self.resize_border_width, y=0, relheight=1)
+            self.top_left_corner.place(x=0, y=0)
+            self.top_right_corner.place(relx=1, x=-self.resize_border_width*2, y=0)
+            self.bottom_left_corner.place(x=0, rely=1, y=-self.resize_border_width*2)
+            self.bottom_right_corner.place(relx=1, x=-self.resize_border_width*2, rely=1, y=-self.resize_border_width*2)
+    
+    def hide_resize_borders(self):
+        """隐藏调整大小边框"""
+        if hasattr(self, 'top_border'):
+            self.top_border.place_forget()
+            self.bottom_border.place_forget()
+            self.left_border.place_forget()
+            self.right_border.place_forget()
+            self.top_left_corner.place_forget()
+            self.top_right_corner.place_forget()
+            self.bottom_left_corner.place_forget()
+            self.bottom_right_corner.place_forget()
 
     def create_custom_menu_buttons(self):
         """创建自定义菜单按钮"""
@@ -327,6 +504,8 @@ class TopMostEditor:
         
         view_menu = tk.Menu(view_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
         view_menu.add_command(label="显示行号", command=self.toggle_line_numbers)
+        view_menu.add_separator()
+        view_menu.add_command(label="透明度控制", command=self.show_transparency_control)
         view_btn.config(menu=view_menu)
     
     def create_new_tab(self, title="新建文档"):
@@ -640,9 +819,11 @@ class TopMostEditor:
         dialog = tk.Toplevel(self.root)
         dialog.title("重命名标签页")
         dialog.geometry("300x120")
-        dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
+        
+        # 添加拖拽和调整大小功能
+        self.make_window_draggable_resizable(dialog)
         
         # 居中显示
         dialog.geometry("+%d+%d" % (self.root.winfo_rootx() + 50, self.root.winfo_rooty() + 50))
@@ -1600,6 +1781,9 @@ class TopMostEditor:
         search_window.transient(self.root)
         search_window.attributes('-topmost', True)
         
+        # 添加拖拽和调整大小功能
+        self.make_window_draggable_resizable(search_window)
+        
         tk.Label(search_window, text="查找:").grid(row=0, column=0, padx=5, pady=5)
         search_entry = tk.Entry(search_window, width=30)
         search_entry.grid(row=0, column=1, padx=5, pady=5)
@@ -1908,6 +2092,153 @@ class TopMostEditor:
                 
                 # 从字典中移除
                 del self.line_number_widgets[line_num]
+    
+    def make_window_draggable_resizable(self, window):
+        """为弹窗添加拖拽和调整大小功能"""
+        # 保持系统标题栏，通过标题栏实现拖拽
+        # 不需要额外的拖拽绑定，系统标题栏本身就支持拖拽
+        pass
+        
+        # 创建调整大小边框
+        border_width = 3
+        
+        # 四个边框
+        top_border = tk.Frame(window, bg=self.default_bg, height=border_width, cursor="sb_v_double_arrow")
+        top_border.place(x=0, y=0, relwidth=1)
+        
+        bottom_border = tk.Frame(window, bg=self.default_bg, height=border_width, cursor="sb_v_double_arrow")
+        bottom_border.place(x=0, rely=1, y=-border_width, relwidth=1)
+        
+        left_border = tk.Frame(window, bg=self.default_bg, width=border_width, cursor="sb_h_double_arrow")
+        left_border.place(x=0, y=0, relheight=1)
+        
+        right_border = tk.Frame(window, bg=self.default_bg, width=border_width, cursor="sb_h_double_arrow")
+        right_border.place(relx=1, x=-border_width, y=0, relheight=1)
+        
+        # 四个角落
+        top_left_corner = tk.Frame(window, bg=self.default_bg, width=border_width*2, height=border_width*2, cursor="size_nw_se")
+        top_left_corner.place(x=0, y=0)
+        
+        top_right_corner = tk.Frame(window, bg=self.default_bg, width=border_width*2, height=border_width*2, cursor="size_ne_sw")
+        top_right_corner.place(relx=1, x=-border_width*2, y=0)
+        
+        bottom_left_corner = tk.Frame(window, bg=self.default_bg, width=border_width*2, height=border_width*2, cursor="size_ne_sw")
+        bottom_left_corner.place(x=0, rely=1, y=-border_width*2)
+        
+        bottom_right_corner = tk.Frame(window, bg=self.default_bg, width=border_width*2, height=border_width*2, cursor="size_nw_se")
+        bottom_right_corner.place(relx=1, x=-border_width*2, rely=1, y=-border_width*2)
+        
+        # 调整大小功能
+        def start_resize(event, direction):
+            window.is_resizing = True
+            window.resize_direction = direction
+            window.resize_start_x = event.x_root
+            window.resize_start_y = event.y_root
+            window.resize_start_width = window.winfo_width()
+            window.resize_start_height = window.winfo_height()
+            window.resize_start_window_x = window.winfo_x()
+            window.resize_start_window_y = window.winfo_y()
+        
+        def resize_window(event):
+            if not hasattr(window, 'is_resizing') or not window.is_resizing:
+                return
+                
+            dx = event.x_root - window.resize_start_x
+            dy = event.y_root - window.resize_start_y
+            
+            new_width = window.resize_start_width
+            new_height = window.resize_start_height
+            new_x = window.resize_start_window_x
+            new_y = window.resize_start_window_y
+            
+            min_width = 200
+            min_height = 100
+            
+            if "right" in window.resize_direction:
+                new_width = max(min_width, window.resize_start_width + dx)
+            elif "left" in window.resize_direction:
+                new_width = max(min_width, window.resize_start_width - dx)
+                if new_width > min_width:
+                    new_x = window.resize_start_window_x + dx
+                else:
+                    new_x = window.resize_start_window_x + (window.resize_start_width - min_width)
+                    
+            if "bottom" in window.resize_direction:
+                new_height = max(min_height, window.resize_start_height + dy)
+            elif "top" in window.resize_direction:
+                new_height = max(min_height, window.resize_start_height - dy)
+                if new_height > min_height:
+                    new_y = window.resize_start_window_y + dy
+                else:
+                    new_y = window.resize_start_window_y + (window.resize_start_height - min_height)
+            
+            window.geometry(f"{int(new_width)}x{int(new_height)}+{int(new_x)}+{int(new_y)}")
+        
+        def end_resize(event):
+            window.is_resizing = False
+            window.resize_direction = None
+        
+        # 绑定调整大小事件
+        borders = [
+            (top_border, "top"), (bottom_border, "bottom"),
+            (left_border, "left"), (right_border, "right"),
+            (top_left_corner, "top_left"), (top_right_corner, "top_right"),
+            (bottom_left_corner, "bottom_left"), (bottom_right_corner, "bottom_right")
+        ]
+        
+        for border, direction in borders:
+            border.bind("<Button-1>", lambda e, d=direction: start_resize(e, d))
+            border.bind("<B1-Motion>", resize_window)
+            border.bind("<ButtonRelease-1>", end_resize)
+    
+    def show_transparency_control(self):
+        """显示透明度控制窗口"""
+        # 创建透明度控制窗口
+        transparency_window = tk.Toplevel(self.root)
+        transparency_window.title("透明度控制")
+        transparency_window.geometry("300x150")
+        transparency_window.transient(self.root)
+        transparency_window.grab_set()
+        
+        # 添加拖拽和调整大小功能
+        self.make_window_draggable_resizable(transparency_window)
+        
+        # 居中显示
+        transparency_window.geometry("+%d+%d" % (self.root.winfo_rootx() + 50, self.root.winfo_rooty() + 50))
+        
+        # 获取当前透明度值（如果没有设置过，默认为1.0）
+        current_alpha = getattr(self, 'current_alpha', 1.0)
+        
+        # 标题标签
+        tk.Label(transparency_window, text="调整窗口透明度:", font=("Arial", 10)).pack(pady=10)
+        
+        # 透明度值显示标签
+        alpha_label = tk.Label(transparency_window, text=f"当前透明度: {int(current_alpha * 100)}%", font=("Arial", 9))
+        alpha_label.pack(pady=5)
+        
+        # 透明度滑块
+        def on_alpha_change(value):
+            alpha = float(value) / 100.0
+            self.current_alpha = alpha
+            self.root.attributes('-alpha', alpha)
+            alpha_label.config(text=f"当前透明度: {int(alpha * 100)}%")
+        
+        alpha_scale = tk.Scale(transparency_window, from_=10, to=100, orient=tk.HORIZONTAL,
+                              command=on_alpha_change, length=250)
+        alpha_scale.set(int(current_alpha * 100))
+        alpha_scale.pack(pady=10)
+        
+        # 按钮框架
+        button_frame = tk.Frame(transparency_window)
+        button_frame.pack(pady=10)
+        
+        # 重置按钮
+        def reset_transparency():
+            alpha_scale.set(100)
+            on_alpha_change(100)
+        
+        tk.Button(button_frame, text="重置", command=reset_transparency).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="关闭", command=transparency_window.destroy).pack(side=tk.LEFT, padx=5)
     
     def on_text_changed(self, event=None):
         # 延迟更新行号，避免频繁更新
