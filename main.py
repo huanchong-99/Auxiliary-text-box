@@ -1851,7 +1851,6 @@ class TopMostEditor:
                 self.editor_frame,
                 self.text_frame,
                 self.text_editor,
-                self.line_numbers,
                 self.status_bar,
             ]
             
@@ -1860,8 +1859,11 @@ class TopMostEditor:
                 
             # 设置文本相关前景色
             self.text_editor.config(fg=fg_color, insertbackground=fg_color)
-            self.line_numbers.config(fg=fg_color)
             self.status_bar.config(fg=fg_color)
+            
+            # 更新行号组件的颜色
+            for line_widget in self.line_number_widgets.values():
+                line_widget.config(bg=bg_color, fg=fg_color)
             
             # 设置滚动条颜色 (部分平台支持)
             try:
@@ -1869,12 +1871,8 @@ class TopMostEditor:
             except:
                 pass
                 
-            # 设置菜单颜色
-            for menu in [self.file_menu, self.edit_menu, self.format_menu, self.view_menu]:
-                try:
-                    menu.config(bg=bg_color, fg=fg_color, activebackground=bg_color, activeforeground=fg_color)
-                except:
-                    pass
+            # 菜单颜色需要重新创建菜单按钮来更新
+            # 这里暂时跳过菜单颜色更新，因为菜单是局部变量
                     
             # 强制更新UI
             self.root.update_idletasks()
@@ -1987,7 +1985,9 @@ class TopMostEditor:
             slant = "italic" if italic_var.get() else "roman"
             new_font = font.Font(family=family_var.get(), size=size_var.get(), weight=weight, slant=slant)
             self.text_editor.configure(font=new_font)
-            self.line_numbers.configure(font=new_font)
+            # 更新所有行号组件的字体
+            for line_widget in self.line_number_widgets.values():
+                line_widget.configure(font=new_font)
             self.default_font = new_font
             self.update_line_numbers()
             font_window.destroy()
