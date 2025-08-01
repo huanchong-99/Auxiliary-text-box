@@ -1152,6 +1152,9 @@ class TopMostEditor:
         self.text_editor.edit_modified(False)
     
     def save_file(self):
+        # 保存前先同步当前标签页状态
+        self.save_current_tab_state()
+        
         if self.filename:
             try:
                 # 检查文件扩展名
@@ -1167,6 +1170,9 @@ class TopMostEditor:
                     current_tab = self.tabs[self.current_tab_index]
                     current_tab['modified'] = False
                     current_tab['title'] = os.path.basename(self.filename)
+                    
+                    # 重置文本编辑器的修改状态
+                    self.text_editor.edit_modified(False)
                     
                     # 更新标签页UI（书签式显示标题第一个字符）
                     tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
@@ -1257,10 +1263,22 @@ class TopMostEditor:
         return True
     
     def save_as(self):
+        # 检查是否有多个标签页
+        has_multiple_tabs = len(self.tabs) > 1
         # 检查是否包含图片
         has_images = hasattr(self, 'image_info') and len(self.image_info) > 0
         
-        if has_images:
+        if has_multiple_tabs:
+            # 多标签页情况下，优先推荐项目格式
+            filetypes = [
+                ("项目文件 (推荐，保存所有标签页)", "*.rtep"),
+                ("富文本文档 (仅当前标签页)", "*.rted"),
+                ("纯文本文件 (仅当前标签页，图片将丢失)", "*.txt"),
+                ("Python文件 (仅当前标签页，图片将丢失)", "*.py"),
+                ("所有文件", "*.*")
+            ]
+            default_ext = ".rtep"
+        elif has_images:
             filetypes = [
                 ("富文本文档 (推荐)", "*.rted"),
                 ("纯文本文件 (图片将丢失)", "*.txt"),
@@ -1283,21 +1301,32 @@ class TopMostEditor:
         )
         
         if file_path:
-            self.filename = file_path
-            
-            # 更新当前标签页信息
-            current_tab = self.tabs[self.current_tab_index]
-            current_tab['filename'] = file_path
-            current_tab['title'] = os.path.basename(file_path)
-            
-            # 更新标签页UI（书签式显示标题第一个字符）
-            tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
-            current_tab['ui_button'].config(text=tab_display)
-            
-            result = self.save_file()
-            if result:
-                self.update_window_title()
-            return result
+            # 检查文件扩展名，决定保存方式
+            if file_path.lower().endswith('.rtep'):
+                # 保存为项目文件
+                if self.save_project_to_file(file_path):
+                    self.project_filename = file_path
+                    self.project_name = os.path.splitext(os.path.basename(file_path))[0]
+                    self.update_window_title()
+                    return True
+                return False
+            else:
+                # 保存为单文件
+                self.filename = file_path
+                
+                # 更新当前标签页信息
+                current_tab = self.tabs[self.current_tab_index]
+                current_tab['filename'] = file_path
+                current_tab['title'] = os.path.basename(file_path)
+                
+                # 更新标签页UI（书签式显示标题第一个字符）
+                tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                current_tab['ui_button'].config(text=tab_display)
+                
+                result = self.save_file()
+                if result:
+                    self.update_window_title()
+                return result
         return False
     
     def exit_app(self):
