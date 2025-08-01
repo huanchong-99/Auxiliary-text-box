@@ -108,7 +108,7 @@ class TopMostEditor:
         
         # 初始化内嵌行号相关变量
         self.line_number_widgets = {}  # 存储行号Label组件
-        self.show_line_numbers = True
+        self.show_line_numbers = False  # 默认关闭行号显示
         
         # 添加默认空行以显示行号
         default_lines = "\n" * 60
@@ -158,9 +158,9 @@ class TopMostEditor:
         self.text_editor.tag_configure("function", foreground="purple")
         self.text_editor.tag_configure("number", foreground="orange")
         
-        # 显示行号
-        self.show_line_numbers = True
-        self.update_line_numbers()
+        # 显示行号（默认关闭）
+        if self.show_line_numbers:
+            self.update_line_numbers()
         
         # 绑定事件
         self.text_editor.bind("<KeyRelease>", self.on_key_release)
@@ -170,6 +170,8 @@ class TopMostEditor:
         self.text_editor.bind('<MouseWheel>', self.on_text_changed)
         self.text_editor.bind('<KeyPress>', self.on_text_changed)
         self.text_editor.bind('<ButtonRelease>', self.on_text_changed)
+        # 绑定右键菜单
+        self.text_editor.bind("<Button-3>", self.show_format_menu)
         
         # 键盘快捷键
         self.root.bind("<Control-n>", lambda event: self.new_file())
@@ -189,8 +191,14 @@ class TopMostEditor:
         # 创建窗口边缘调整大小区域
         self.create_resize_borders()
         
+        # 创建右键格式化菜单
+        self.create_text_format_menu()
+        
         # 设置焦点
         self.text_editor.focus_set()
+        
+        # 加载默认字体设置
+        self.load_default_font()
         
         # 更新窗口标题
         self.update_window_title()
@@ -511,6 +519,10 @@ class TopMostEditor:
         format_menu.add_command(label="文字颜色", command=self.change_text_color)
         format_menu.add_command(label="背景颜色", command=self.change_bg_color)
         format_menu.add_command(label="字体选择", command=self.change_font)
+        format_menu.add_separator()
+        format_menu.add_command(label="设置默认字体", command=self.set_default_font)
+        format_menu.add_separator()
+        format_menu.add_command(label="颜色调试信息", command=self.debug_color_info)
         format_btn.config(menu=format_menu)
         
         # 查看菜单按钮
@@ -645,6 +657,26 @@ class TopMostEditor:
             # 保存修改状态
             current_tab['modified'] = self.text_editor.edit_modified()
             
+            # 保存颜色信息
+            color_ranges = []
+            
+            # 获取所有文字标签
+            for tag_name in self.text_editor.tag_names():
+                if tag_name.startswith('color_'):
+                    ranges = self.text_editor.tag_ranges(tag_name)
+                    color = self.text_editor.tag_cget(tag_name, 'foreground')
+                    
+                    # 将范围转换为字符串格式保存
+                    for i in range(0, len(ranges), 2):
+                        if i + 1 < len(ranges):
+                            color_ranges.append({
+                                'start': str(ranges[i]),
+                                'end': str(ranges[i + 1]),
+                                'color': color
+                            })
+            
+            current_tab['color_ranges'] = color_ranges
+            
             # 保存图片信息
             if hasattr(self, 'images'):
                 current_tab['images'] = self.images.copy()
@@ -664,6 +696,18 @@ class TopMostEditor:
         # 加载文本内容
         if tab_data['content']:
             self.text_editor.insert(1.0, tab_data['content'])
+        
+        # 恢复颜色信息
+        if 'color_ranges' in tab_data:
+            for i, color_range in enumerate(tab_data['color_ranges']):
+                tag_name = f'color_{i}'
+                self.text_editor.tag_add(tag_name, 
+                                       color_range['start'], 
+                                       color_range['end'])
+                self.text_editor.tag_config(tag_name, 
+                                          foreground=color_range['color'])
+                # 提升颜色标签优先级，避免被其他标签覆盖
+                self.text_editor.tag_raise(tag_name)
         
         # 恢复光标位置
         try:
@@ -901,7 +945,7 @@ class TopMostEditor:
     def close_tab(self, tab_index):
         """关闭指定标签页"""
         if len(self.tabs) <= 1:
-            messagebox.showinfo("提示", "至少需要保留一个标签页")
+            self.show_message("提示", "至少需要保留一个标签页", "info")
             return
         
         tab_to_close = self.tabs[tab_index]
@@ -975,16 +1019,37 @@ class TopMostEditor:
             if file_path:
                 try:
                     if file_path.lower().endswith('.rtep'):
-                        # 打开项目文件
+                        # 检查是否为项目文件（包含多个标签页）还是单个富文本文件
                         with open(file_path, 'r', encoding='utf-8') as file:
-                            project_data = json.load(file)
+                            data = json.load(file)
                         
-                        if self.import_project_data(project_data):
-                            self.project_filename = file_path
-                            self.project_name = os.path.splitext(os.path.basename(file_path))[0]
-                            self.project_modified = False
+                        # 如果包含tabs字段，说明是项目文件
+                        if 'tabs' in data:
+                            # 打开项目文件
+                            if self.import_project_data(data):
+                                self.project_filename = file_path
+                                self.project_name = os.path.splitext(os.path.basename(file_path))[0]
+                                self.project_modified = False
+                                self.update_window_title()
+                                self.show_message("成功", f"项目已加载: {file_path}", "info")
+                        else:
+                            # 作为单个富文本文件打开
+                            self.open_rich_text_file(file_path)
+                            
+                            # 更新当前标签页信息
+                            current_tab = self.tabs[self.current_tab_index]
+                            current_tab['filename'] = file_path
+                            current_tab['title'] = os.path.basename(file_path)
+                            current_tab['modified'] = False
+                            
+                            # 更新标签页UI（书签式显示标题第一个字符）
+                            tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                            current_tab['ui_button'].config(text=tab_display)
+                            
+                            self.filename = file_path
                             self.update_window_title()
-                            messagebox.showinfo("成功", f"项目已加载: {file_path}")
+                            self.update_line_numbers()
+                            self.apply_syntax_highlighting()
                     elif file_path.lower().endswith('.rted'):
                         # 打开富文本文件
                         self.open_rich_text_file(file_path)
@@ -1022,7 +1087,7 @@ class TopMostEditor:
                         self.update_line_numbers()
                         self.apply_syntax_highlighting()
                 except Exception as e:
-                    messagebox.showerror("错误", f"无法打开文件: {str(e)}")
+                    self.show_message("错误", f"无法打开文件: {str(e)}", "error")
     
     def open_plain_text_file(self, file_path):
         """打开纯文本文件"""
@@ -1146,7 +1211,22 @@ class TopMostEditor:
                     
             except Exception as e:
                 print(f"恢复图片时出错: {e}")
-                messagebox.showwarning("警告", f"无法恢复某个图片: {str(e)}")
+                self.show_message("警告", f"无法恢复某个图片: {str(e)}", "warning")
+        
+        # 恢复颜色信息
+        color_ranges = data.get('color_ranges', [])
+        # 将颜色范围同步到当前标签页数据
+        if self.tabs and self.current_tab_index < len(self.tabs):
+            self.tabs[self.current_tab_index]['color_ranges'] = color_ranges
+        for i, color_range in enumerate(color_ranges):
+            tag_name = f'color_{i}'
+            self.text_editor.tag_add(tag_name, 
+                                   color_range['start'], 
+                                   color_range['end'])
+            self.text_editor.tag_config(tag_name, 
+                                      foreground=color_range['color'])
+            # 提升颜色标签优先级，避免被其他标签覆盖
+            self.text_editor.tag_raise(tag_name)
         
         # 重置修改状态，避免打开文件时显示未保存更改
         self.text_editor.edit_modified(False)
@@ -1158,7 +1238,7 @@ class TopMostEditor:
         if self.filename:
             try:
                 # 检查文件扩展名
-                if self.filename.lower().endswith('.rted'):
+                if self.filename.lower().endswith('.rtep') or self.filename.lower().endswith('.rted'):
                     # 保存为富文本格式
                     result = self.save_rich_text_file()
                 else:
@@ -1183,7 +1263,7 @@ class TopMostEditor:
                 
                 return result
             except Exception as e:
-                messagebox.showerror("错误", f"无法保存文件: {str(e)}")
+                self.show_message("错误", f"无法保存文件: {str(e)}", "error")
                 return False
         else:
             return self.save_as()
@@ -1212,8 +1292,25 @@ class TopMostEditor:
         save_data = {
             'version': '1.0',
             'text': content,
-            'images': []
+            'images': [],
+            'color_ranges': []
         }
+        
+        # 保存颜色信息
+        save_color_ranges = []
+        for tag_name in self.text_editor.tag_names():
+            if tag_name.startswith('color_'):
+                ranges = self.text_editor.tag_ranges(tag_name)
+                color = self.text_editor.tag_cget(tag_name, 'foreground')
+                
+                # 将范围转换为字符串格式保存
+                for i in range(0, len(ranges), 2):
+                    if i + 1 < len(ranges):
+                        save_color_ranges.append({
+                            'start': str(ranges[i]),
+                            'end': str(ranges[i + 1]),
+                            'color': color
+                        })
         
         # 保存图片信息
         if hasattr(self, 'image_info'):
@@ -1268,32 +1365,15 @@ class TopMostEditor:
         # 检查是否包含图片
         has_images = hasattr(self, 'image_info') and len(self.image_info) > 0
         
-        if has_multiple_tabs:
-            # 多标签页情况下，优先推荐项目格式
-            filetypes = [
-                ("项目文件 (推荐，保存所有标签页)", "*.rtep"),
-                ("富文本文档 (仅当前标签页)", "*.rted"),
-                ("纯文本文件 (仅当前标签页，图片将丢失)", "*.txt"),
-                ("Python文件 (仅当前标签页，图片将丢失)", "*.py"),
-                ("所有文件", "*.*")
-            ]
-            default_ext = ".rtep"
-        elif has_images:
-            filetypes = [
-                ("富文本文档 (推荐)", "*.rted"),
-                ("纯文本文件 (图片将丢失)", "*.txt"),
-                ("Python文件 (图片将丢失)", "*.py"),
-                ("所有文件", "*.*")
-            ]
-            default_ext = ".rted"
-        else:
-            filetypes = [
-                ("纯文本文件", "*.txt"),
-                ("Python文件", "*.py"),
-                ("富文本文档", "*.rted"),
-                ("所有文件", "*.*")
-            ]
-            default_ext = ".txt"
+        # 默认优先推荐RTEP格式以保存颜色信息
+        filetypes = [
+            ("项目文件 (推荐，保存颜色和格式)", "*.rtep"),
+            ("富文本文档 (保存颜色和格式)", "*.rted"),
+            ("纯文本文件 (颜色和格式将丢失)", "*.txt"),
+            ("Python文件 (颜色和格式将丢失)", "*.py"),
+            ("所有文件", "*.*")
+        ]
+        default_ext = ".rtep"
             
         file_path = filedialog.asksaveasfilename(
             defaultextension=default_ext,
@@ -1394,7 +1474,7 @@ class TopMostEditor:
     def insert_image(self):
         """插入图片到文本编辑器中"""
         if not PIL_AVAILABLE:
-            messagebox.showerror("错误", "需要安装PIL库才能插入图片\n请运行: pip install Pillow")
+            self.show_message("错误", "需要安装PIL库才能插入图片\n请运行: pip install Pillow", "error")
             return
             
         file_path = filedialog.askopenfilename(
@@ -1473,7 +1553,7 @@ class TopMostEditor:
                 self.bind_floating_image_context_menu(image_name)
                 
             except Exception as e:
-                messagebox.showerror("错误", f"无法插入图片: {str(e)}")
+                self.show_message("错误", f"无法插入图片: {str(e)}", "error")
     
     def bind_floating_image_context_menu(self, image_name):
         """为浮动图片绑定右键菜单和拖拽功能"""
@@ -1858,76 +1938,79 @@ class TopMostEditor:
             if image_name in self.image_info:
                 del self.image_info[image_name]
                 
-            messagebox.showinfo("提示", "图片已删除")
+            self.show_message("提示", "图片已删除", "info")
         except tk.TclError:
-            messagebox.showerror("错误", "无法删除图片")
+            self.show_message("错误", "无法删除图片", "error")
     
     def show_pil_warning(self):
         """显示PIL库未安装的警告"""
-        messagebox.showwarning("功能不可用", "插入图片功能需要安装PIL库\n\n请在命令行中运行:\npip install Pillow")
+        self.show_message("功能不可用", "插入图片功能需要安装PIL库\n\n请在命令行中运行:\npip install Pillow", "warning")
     
     def find_text(self):
-        search_window = tk.Toplevel(self.root)
-        search_window.title("查找")
-        search_window.geometry("300x100")
-        search_window.transient(self.root)
-        search_window.attributes('-topmost', True)
+        """查找和替换对话框"""
+        if hasattr(self, 'find_window') and self.find_window.winfo_exists():
+            self.find_window.lift()
+            return
+            
+        self.find_window = tk.Toplevel(self.root)
+        self.find_window.title("查找和替换")
+        self.find_window.resizable(False, False)
         
-        # 添加拖拽和调整大小功能
-        self.make_window_draggable_resizable(search_window)
+        # 使用新的定位方法
+        self.position_dialog_next_to_main(self.find_window, 400, 200)
         
-        tk.Label(search_window, text="查找:").grid(row=0, column=0, padx=5, pady=5)
-        search_entry = tk.Entry(search_window, width=30)
-        search_entry.grid(row=0, column=1, padx=5, pady=5)
-        search_entry.focus_set()
+        # 查找框
+        tk.Label(self.find_window, text="查找:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.find_entry = tk.Entry(self.find_window, width=30)
+        self.find_entry.grid(row=0, column=1, columnspan=2, padx=5, pady=5)
         
-        case_var = tk.BooleanVar()
-        tk.Checkbutton(search_window, text="区分大小写", variable=case_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5)
+        # 替换框
+        tk.Label(self.find_window, text="替换:").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        self.replace_entry = tk.Entry(self.find_window, width=30)
+        self.replace_entry.grid(row=1, column=1, columnspan=2, padx=5, pady=5)
         
-        def do_find():
-            self.text_editor.tag_remove('search', '1.0', tk.END)
-            search_text = search_entry.get()
-            if search_text:
-                start_pos = '1.0'
-                while True:
-                    if case_var.get():
-                        start_pos = self.text_editor.search(search_text, start_pos, stopindex=tk.END, nocase=False)
-                    else:
-                        start_pos = self.text_editor.search(search_text, start_pos, stopindex=tk.END, nocase=True)
-                    
-                    if not start_pos:
-                        break
-                    
-                    end_pos = f"{start_pos}+{len(search_text)}c"
-                    self.text_editor.tag_add('search', start_pos, end_pos)
-                    start_pos = end_pos
-                    
-                self.text_editor.tag_config('search', background='yellow')
+        # 选项
+        self.match_case = tk.BooleanVar()
+        tk.Checkbutton(self.find_window, text="区分大小写", 
+                      variable=self.match_case).grid(row=2, column=0, sticky='w', padx=5)
         
-        tk.Button(search_window, text="查找全部", command=do_find).grid(row=2, column=0, padx=5, pady=5)
-        tk.Button(search_window, text="关闭", command=search_window.destroy).grid(row=2, column=1, padx=5, pady=5)
+        # 按钮
+        button_frame = tk.Frame(self.find_window)
+        button_frame.grid(row=3, column=0, columnspan=3, pady=10)
         
-        search_window.protocol("WM_DELETE_WINDOW", search_window.destroy)
+        tk.Button(button_frame, text="查找下一个", 
+                 command=self.find_next).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="替换", 
+                 command=self.replace_current).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="全部替换", 
+                 command=self.replace_all).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="关闭", 
+                 command=self.find_window.destroy).pack(side=tk.LEFT, padx=5)
+        
+        # 初始化搜索位置
+        self.search_start = '1.0'
+        self.find_entry.focus()
     
     def change_text_color(self):
-        color = colorchooser.askcolor(title="选择文字颜色")
-        if color[1]:
-            # 检查是否有选中的文本
+        """更改文字颜色"""
+        color = colorchooser.askcolor()[1]
+        if color:
             try:
-                selected_text = self.text_editor.get(tk.SEL_FIRST, tk.SEL_LAST)
-                if selected_text:
-                    # 创建或更新标签用于选中文本的颜色
-                    tag_name = f"color_{color[1].replace('#', '')}"
-                    self.text_editor.tag_configure(tag_name, foreground=color[1])
-                    # 应用颜色标签到选中文本
-                    self.text_editor.tag_add(tag_name, tk.SEL_FIRST, tk.SEL_LAST)
-                    return
-            except tk.TclError:
-                # 没有选中文本，应用到全局
-                pass
+                # 获取选中文本范围
+                start = self.text_editor.index(tk.SEL_FIRST)
+                end = self.text_editor.index(tk.SEL_LAST)
                 
-            # 如果没有选中文本或出现错误，则应用到全局
-            self.text_editor.config(fg=color[1])
+                # 创建唯一标签名
+                import time
+                tag_name = f'color_{int(time.time() * 1000)}'
+                
+                # 应用颜色
+                self.text_editor.tag_add(tag_name, start, end)
+                self.text_editor.tag_config(tag_name, foreground=color)
+                
+            except tk.TclError:
+                # 没有选中文本时的处理
+                self.show_message("警告", "请先选中要更改颜色的文字", "warning")
     
     def change_bg_color(self):
         color = colorchooser.askcolor(title="选择背景颜色")
@@ -2393,6 +2476,10 @@ class TopMostEditor:
                 start = "1.0 + %dc" % match.start()
                 end = "1.0 + %dc" % match.end()
                 self.text_editor.tag_add(tag, start, end)
+        # 语法高亮完成后，提升自定义颜色标签优先级，避免被覆盖
+        for tag_name in self.text_editor.tag_names():
+            if tag_name.startswith('color_'):
+                self.text_editor.tag_raise(tag_name)
     
     # ==================== 项目管理功能 ====================
     
@@ -2424,7 +2511,8 @@ class TopMostEditor:
                 "image_info": {},
                 "modified": tab['modified'],
                 "cursor_pos": tab['cursor_pos'],
-                "custom_color": tab['custom_color']
+                "custom_color": tab['custom_color'],
+                    "color_ranges": tab.get('color_ranges', [])
             }
             
             # 处理图片信息
@@ -2508,7 +2596,8 @@ class TopMostEditor:
                     'image_info': {},
                     'modified': False,  # 导入后所有标签页都应该是未修改状态
                     'cursor_pos': tab_data.get('cursor_pos', '1.0'),
-                    'custom_color': tab_data.get('custom_color')
+                    'custom_color': tab_data.get('custom_color'),
+                    'color_ranges': tab_data.get('color_ranges', [])
                 }
                 
                 # 恢复图片信息
@@ -2589,7 +2678,7 @@ class TopMostEditor:
             return True
             
         except Exception as e:
-            messagebox.showerror("错误", f"导入项目数据时出错: {str(e)}")
+            self.show_message("错误", f"导入项目数据时出错: {str(e)}", "error")
             return False
     
     def save_project(self):
@@ -2640,11 +2729,11 @@ class TopMostEditor:
             # 更新窗口标题
             self.update_window_title()
             
-            messagebox.showinfo("成功", f"项目已保存到: {file_path}")
+            self.show_message("成功", f"项目已保存到: {file_path}", "info")
             return True
             
         except Exception as e:
-            messagebox.showerror("错误", f"保存项目时出错: {str(e)}")
+            self.show_message("错误", f"保存项目时出错: {str(e)}", "error")
             return False
     
     def open_project(self):
@@ -2668,10 +2757,10 @@ class TopMostEditor:
                         self.project_name = os.path.splitext(os.path.basename(file_path))[0]
                         self.project_modified = False
                         self.update_window_title()
-                        messagebox.showinfo("成功", f"项目已加载: {file_path}")
+                        self.show_message("成功", f"项目已加载: {file_path}", "info")
                     
                 except Exception as e:
-                    messagebox.showerror("错误", f"打开项目时出错: {str(e)}")
+                    self.show_message("错误", f"打开项目时出错: {str(e)}", "error")
     
     def check_project_changes(self):
         """检查项目是否有未保存的更改"""
@@ -2707,6 +2796,752 @@ class TopMostEditor:
         if not self.project_modified:
             self.project_modified = True
             self.update_window_title()
+    
+    def get_system_fonts(self):
+        """获取系统所有可用字体"""
+        import tkinter.font as tkfont
+        
+        # 获取系统所有字体族
+        font_families = list(tkfont.families())
+        
+        # 过滤和排序
+        font_families = [f for f in font_families if not f.startswith('@')]  # 过滤掉@开头的字体
+        font_families.sort()  # 按字母顺序排序
+        
+        return font_families
+
+    def create_font_selection_dialog(self):
+        """创建字体选择对话框"""
+        font_window = tk.Toplevel(self.root)
+        font_window.title("选择字体")
+        font_window.resizable(False, False)
+        
+        # 使用新的定位方法
+        self.position_dialog_next_to_main(font_window, 400, 300)
+        
+        # 字体列表
+        tk.Label(font_window, text="字体:").pack(anchor='w', padx=10, pady=(10,0))
+        
+        font_frame = tk.Frame(font_window)
+        font_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # 字体列表框
+        font_listbox = tk.Listbox(font_frame, height=15)
+        scrollbar = tk.Scrollbar(font_frame, orient=tk.VERTICAL)
+        font_listbox.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=font_listbox.yview)
+        
+        font_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 填充字体列表
+        system_fonts = self.get_system_fonts()
+        for font_name in system_fonts:
+            font_listbox.insert(tk.END, font_name)
+        
+        # 字体大小选择
+        size_frame = tk.Frame(font_window)
+        size_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(size_frame, text="大小:").pack(side=tk.LEFT)
+        size_var = tk.StringVar(value="12")
+        size_spinbox = tk.Spinbox(size_frame, from_=8, to=72, width=10, textvariable=size_var)
+        size_spinbox.pack(side=tk.LEFT, padx=(5,0))
+        
+        # 预览区域
+        tk.Label(font_window, text="预览:").pack(anchor='w', padx=10, pady=(10,0))
+        preview_text = tk.Text(font_window, height=3, width=40)
+        preview_text.pack(padx=10, pady=5)
+        preview_text.insert('1.0', "这是字体预览文本\nFont Preview Text\n1234567890")
+        
+        # 更新预览的函数
+        def update_preview(event=None):
+            try:
+                selection = font_listbox.curselection()
+                if selection:
+                    font_name = font_listbox.get(selection[0])
+                    font_size = int(size_var.get())
+                    preview_text.config(font=(font_name, font_size))
+            except (ValueError, tk.TclError):
+                pass
+        
+        font_listbox.bind('<<ListboxSelect>>', update_preview)
+        size_spinbox.bind('<KeyRelease>', update_preview)
+        
+        # 按钮
+        button_frame = tk.Frame(font_window)
+        button_frame.pack(pady=10)
+        
+        def apply_font():
+            try:
+                selection = font_listbox.curselection()
+                if selection:
+                    font_name = font_listbox.get(selection[0])
+                    font_size = int(size_var.get())
+                    self.apply_selected_font(font_name, font_size)
+                    font_window.destroy()
+            except (ValueError, tk.TclError):
+                self.show_message("错误", "请选择有效的字体和大小", "error")
+        
+        tk.Button(button_frame, text="确定", command=apply_font).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="取消", command=font_window.destroy).pack(side=tk.LEFT, padx=5)
+        
+        # 设置默认选择
+        try:
+            default_index = system_fonts.index('Arial')
+            font_listbox.selection_set(default_index)
+            font_listbox.see(default_index)
+            update_preview()
+        except ValueError:
+            if system_fonts:
+                font_listbox.selection_set(0)
+                update_preview()
+
+    def apply_selected_font(self, font_name, font_size):
+        """应用选中的字体"""
+        try:
+            start = self.text_editor.index(tk.SEL_FIRST)
+            end = self.text_editor.index(tk.SEL_LAST)
+            
+            import time
+            tag_name = f'font_{int(time.time() * 1000)}'
+            self.text_editor.tag_add(tag_name, start, end)
+            self.text_editor.tag_config(tag_name, font=(font_name, font_size))
+            
+        except tk.TclError:
+            self.show_message("警告", "请先选中要更改字体的文字", "warning")
+
+    def create_text_format_menu(self):
+        """创建文字格式化右键菜单"""
+        self.format_menu = tk.Menu(self.root, tearoff=0)
+        
+        # 字体大小子菜单
+        size_menu = tk.Menu(self.format_menu, tearoff=0)
+        for size in [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32]:
+            size_menu.add_command(label=f"{size}pt", 
+                                command=lambda s=size: self.change_font_size(s))
+        self.format_menu.add_cascade(label="字体大小", menu=size_menu)
+        
+        # 字体类型
+        self.format_menu.add_command(label="字体类型", command=self.change_font_family)
+        
+        # 文字颜色
+        self.format_menu.add_command(label="文字颜色", command=self.change_text_color)
+        
+        # 下划线
+        self.format_menu.add_command(label="添加下划线", command=self.toggle_underline)
+        
+        self.format_menu.add_separator()
+        
+        # 格式刷功能
+        self.format_menu.add_command(label="复制格式", command=self.copy_format)
+        self.format_menu.add_command(label="粘贴格式", command=self.paste_format)
+        
+        self.format_menu.add_separator()
+        
+        # 标准编辑功能
+        self.format_menu.add_command(label="剪切", command=self.cut)
+        self.format_menu.add_command(label="复制", command=self.copy)
+        self.format_menu.add_command(label="粘贴", command=self.paste)
+        
+        self.format_menu.add_separator()
+        self.format_menu.add_command(label="颜色调试信息", command=self.debug_color_info)
+
+    def show_format_menu(self, event):
+        """显示格式化菜单"""
+        try:
+            # 检查是否有选中文字
+            self.text_editor.index(tk.SEL_FIRST)
+            # 有选中文字时显示格式化菜单
+            self.format_menu.post(event.x_root, event.y_root)
+        except tk.TclError:
+            # 没有选中文字时显示标准右键菜单
+            pass
+
+    def change_font_size(self, size):
+        """更改字体大小"""
+        try:
+            start = self.text_editor.index(tk.SEL_FIRST)
+            end = self.text_editor.index(tk.SEL_LAST)
+            
+            import time
+            tag_name = f'size_{int(time.time() * 1000)}'
+            self.text_editor.tag_add(tag_name, start, end)
+            
+            # 获取当前字体
+            current_font = self.text_editor.cget('font')
+            if isinstance(current_font, str):
+                font_family = current_font
+            else:
+                font_family = current_font[0] if current_font else 'Arial'
+                
+            self.text_editor.tag_config(tag_name, font=(font_family, size))
+        except tk.TclError:
+            pass
+
+    def change_font_family(self):
+        """更改字体类型 - 使用自定义字体选择对话框"""
+        self.create_font_selection_dialog()
+
+    def toggle_underline(self):
+        """切换下划线"""
+        try:
+            start = self.text_editor.index(tk.SEL_FIRST)
+            end = self.text_editor.index(tk.SEL_LAST)
+            
+            import time
+            tag_name = f'underline_{int(time.time() * 1000)}'
+            self.text_editor.tag_add(tag_name, start, end)
+            self.text_editor.tag_config(tag_name, underline=True)
+        except tk.TclError:
+            pass
+
+    def find_next(self):
+        """查找下一个"""
+        search_text = self.find_entry.get()
+        if not search_text:
+            return
+            
+        # 清除之前的高亮
+        self.text_editor.tag_remove('found', '1.0', tk.END)
+        
+        # 搜索选项
+        nocase = 0 if self.match_case.get() else 1
+        
+        # 从当前位置开始搜索
+        pos = self.text_editor.search(search_text, self.search_start, 
+                                     stopindex=tk.END, nocase=nocase)
+        
+        if pos:
+            # 找到了，高亮显示
+            end_pos = f"{pos}+{len(search_text)}c"
+            self.text_editor.tag_add('found', pos, end_pos)
+            self.text_editor.tag_config('found', background='yellow')
+            
+            # 滚动到找到的位置
+            self.text_editor.see(pos)
+            
+            # 更新下次搜索的起始位置
+            self.search_start = end_pos
+            
+            # 选中找到的文本
+            self.text_editor.tag_remove(tk.SEL, '1.0', tk.END)
+            self.text_editor.tag_add(tk.SEL, pos, end_pos)
+            self.text_editor.mark_set(tk.INSERT, end_pos)
+            
+        else:
+            # 没找到，从头开始
+            self.search_start = '1.0'
+            self.show_message("查找", "已搜索到文档末尾", "info")
+
+    def replace_current(self):
+        """替换当前选中的文本"""
+        try:
+            # 检查是否有选中文本
+            start = self.text_editor.index(tk.SEL_FIRST)
+            end = self.text_editor.index(tk.SEL_LAST)
+            
+            # 获取选中的文本
+            selected_text = self.text_editor.get(start, end)
+            search_text = self.find_entry.get()
+            
+            # 检查选中的文本是否匹配查找文本
+            if (self.match_case.get() and selected_text == search_text) or \
+               (not self.match_case.get() and selected_text.lower() == search_text.lower()):
+                # 替换文本
+                replace_text = self.replace_entry.get()
+                self.text_editor.delete(start, end)
+                self.text_editor.insert(start, replace_text)
+                
+                # 查找下一个
+                self.find_next()
+            else:
+                # 当前选中的不是要查找的文本，先查找
+                self.find_next()
+                
+        except tk.TclError:
+            # 没有选中文本，先查找
+            self.find_next()
+
+    def replace_all(self):
+        """全部替换"""
+        search_text = self.find_entry.get()
+        replace_text = self.replace_entry.get()
+        
+        if not search_text:
+            return
+            
+        # 搜索选项
+        nocase = 0 if self.match_case.get() else 1
+        
+        count = 0
+        start_pos = '1.0'
+        
+        while True:
+            pos = self.text_editor.search(search_text, start_pos, 
+                                         stopindex=tk.END, nocase=nocase)
+            if not pos:
+                break
+                
+            end_pos = f"{pos}+{len(search_text)}c"
+            self.text_editor.delete(pos, end_pos)
+            self.text_editor.insert(pos, replace_text)
+            
+            count += 1
+            start_pos = f"{pos}+{len(replace_text)}c"
+        
+        self.show_message("替换完成", f"共替换了 {count} 处", "info")
+    
+    def copy_format(self):
+        """复制选中文字的格式"""
+        try:
+            start = self.text_editor.index(tk.SEL_FIRST)
+            end = self.text_editor.index(tk.SEL_LAST)
+            
+            # 获取选中文字的所有标签
+            tags = self.text_editor.tag_names(start)
+            format_info = {}
+            
+            for tag in tags:
+                if tag.startswith('color_') or tag.startswith('size_') or tag.startswith('font_') or tag == 'underline':
+                    tag_config = self.text_editor.tag_cget(tag, 'font')
+                    if tag_config:
+                        format_info['font'] = tag_config
+                    
+                    tag_color = self.text_editor.tag_cget(tag, 'foreground')
+                    if tag_color:
+                        format_info['foreground'] = tag_color
+                    
+                    tag_underline = self.text_editor.tag_cget(tag, 'underline')
+                    if tag_underline:
+                        format_info['underline'] = tag_underline
+            
+            # 保存格式信息
+            self.copied_format = format_info
+            self.show_message("格式复制", "格式已复制", "info")
+            
+        except tk.TclError:
+            self.show_message("警告", "请先选中要复制格式的文字", "warning")
+    
+    def paste_format(self):
+        """将复制的格式应用到选中文字"""
+        if not hasattr(self, 'copied_format') or not self.copied_format:
+            self.show_message("警告", "请先复制格式", "warning")
+            return
+        
+        try:
+            start = self.text_editor.index(tk.SEL_FIRST)
+            end = self.text_editor.index(tk.SEL_LAST)
+            
+            # 创建唯一标签名
+            import time
+            tag_name = f'format_{int(time.time() * 1000)}'
+            
+            # 应用标签到选中文字
+            self.text_editor.tag_add(tag_name, start, end)
+            
+            # 应用复制的格式
+            if 'font' in self.copied_format:
+                self.text_editor.tag_config(tag_name, font=self.copied_format['font'])
+            if 'foreground' in self.copied_format:
+                self.text_editor.tag_config(tag_name, foreground=self.copied_format['foreground'])
+            if 'underline' in self.copied_format:
+                self.text_editor.tag_config(tag_name, underline=self.copied_format['underline'])
+            
+            self.show_message("格式粘贴", "格式已应用", "info")
+            
+        except tk.TclError:
+            self.show_message("警告", "请先选中要应用格式的文字", "warning")
+    
+    def set_default_font(self):
+        """设置默认字体"""
+        font_window = tk.Toplevel(self.root)
+        font_window.title("设置默认字体")
+        font_window.resizable(False, False)
+        
+        # 使用新的定位方法
+        self.position_dialog_next_to_main(font_window, 400, 500)
+        
+        # 字体列表
+        tk.Label(font_window, text="字体:").pack(anchor='w', padx=10, pady=(10,0))
+        
+        font_frame = tk.Frame(font_window)
+        font_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # 字体列表框
+        font_listbox = tk.Listbox(font_frame, height=15)
+        scrollbar = tk.Scrollbar(font_frame, orient=tk.VERTICAL)
+        font_listbox.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=font_listbox.yview)
+        
+        font_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 填充字体列表
+        system_fonts = self.get_system_fonts()
+        for font_name in system_fonts:
+            font_listbox.insert(tk.END, font_name)
+        
+        # 字体大小选择
+        size_frame = tk.Frame(font_window)
+        size_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(size_frame, text="大小:").pack(side=tk.LEFT)
+        size_var = tk.StringVar(value="12")
+        size_spinbox = tk.Spinbox(size_frame, from_=8, to=72, width=10, textvariable=size_var)
+        size_spinbox.pack(side=tk.LEFT, padx=(5,0))
+        
+        # 预览区域
+        tk.Label(font_window, text="预览:").pack(anchor='w', padx=10, pady=(10,0))
+        preview_text = tk.Text(font_window, height=3, width=40)
+        preview_text.pack(padx=10, pady=5)
+        preview_text.insert('1.0', "这是默认字体预览\nDefault Font Preview\n1234567890")
+        
+        # 更新预览的函数
+        def update_preview(event=None):
+            try:
+                selection = font_listbox.curselection()
+                if selection:
+                    font_name = font_listbox.get(selection[0])
+                    font_size = int(size_var.get())
+                    preview_text.config(font=(font_name, font_size))
+            except (ValueError, tk.TclError):
+                pass
+        
+        font_listbox.bind('<<ListboxSelect>>', update_preview)
+        size_spinbox.bind('<KeyRelease>', update_preview)
+        
+        # 按钮
+        button_frame = tk.Frame(font_window)
+        button_frame.pack(pady=10)
+        
+        def apply_default_font():
+            try:
+                selection = font_listbox.curselection()
+                if selection:
+                    font_name = font_listbox.get(selection[0])
+                    font_size = int(size_var.get())
+                    
+                    # 保存默认字体设置
+                    default_font_file = os.path.join(os.path.dirname(__file__), 'default_font.json')
+                    try:
+                        with open(default_font_file, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                'font_family': font_name,
+                                'font_size': font_size
+                            }, f, ensure_ascii=False, indent=2)
+                        
+                        # 立即应用到当前编辑器
+                        default_font = font.Font(family=font_name, size=font_size)
+                        self.text_editor.config(font=default_font)
+                        
+                        self.show_message("设置成功", f"默认字体已设置为 {font_name} {font_size}", "info")
+                        font_window.destroy()
+                    except Exception as e:
+                        self.show_message("错误", f"保存默认字体设置失败: {str(e)}", "error")
+                else:
+                    self.show_message("警告", "请选择一个字体", "warning")
+            except (ValueError, tk.TclError):
+                self.show_message("错误", "请选择有效的字体和大小", "error")
+        
+        tk.Button(button_frame, text="确定", command=apply_default_font).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="取消", command=font_window.destroy).pack(side=tk.LEFT, padx=5)
+        
+        # 设置默认选择
+        try:
+            default_index = system_fonts.index('Arial')
+            font_listbox.selection_set(default_index)
+            font_listbox.see(default_index)
+            update_preview()
+        except ValueError:
+            if system_fonts:
+                font_listbox.selection_set(0)
+                update_preview()
+    
+    def load_default_font(self):
+        """加载默认字体设置"""
+        default_font_file = os.path.join(os.path.dirname(__file__), 'default_font.json')
+        try:
+            if os.path.exists(default_font_file):
+                with open(default_font_file, 'r', encoding='utf-8') as f:
+                    font_config = json.load(f)
+                    
+                # 应用默认字体到文本编辑器
+                default_font = font.Font(
+                    family=font_config.get('font_family', 'Arial'),
+                    size=font_config.get('font_size', 12)
+                )
+                self.text_editor.config(font=default_font)
+                return True
+        except Exception as e:
+            print(f"加载默认字体失败: {str(e)}")
+        return False
+    
+    def position_dialog_next_to_main(self, dialog_window, width=300, height=200):
+        """将对话框定位到主窗口旁边，避免被覆盖"""
+        try:
+            # 获取主窗口位置和大小
+            main_x = self.root.winfo_x()
+            main_y = self.root.winfo_y()
+            main_width = self.root.winfo_width()
+            main_height = self.root.winfo_height()
+            
+            # 获取屏幕尺寸
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            
+            # 计算对话框位置（优先放在右侧）
+            dialog_x = main_x + main_width + 10
+            dialog_y = main_y
+            
+            # 如果右侧空间不够，放在左侧
+            if dialog_x + width > screen_width:
+                dialog_x = main_x - width - 10
+                
+            # 如果左侧也不够，放在下方
+            if dialog_x < 0:
+                dialog_x = main_x
+                dialog_y = main_y + main_height + 10
+                
+            # 如果下方也不够，放在上方
+            if dialog_y + height > screen_height:
+                dialog_y = main_y - height - 10
+                
+            # 确保不超出屏幕边界
+            dialog_x = max(0, min(dialog_x, screen_width - width))
+            dialog_y = max(0, min(dialog_y, screen_height - height))
+            
+            # 设置对话框位置
+            dialog_window.geometry(f"{width}x{height}+{dialog_x}+{dialog_y}")
+            
+            # 设置为置顶但不强制（避免覆盖主窗口）
+            dialog_window.attributes('-topmost', True)
+            dialog_window.lift()
+            
+        except Exception as e:
+            print(f"定位对话框失败: {str(e)}")
+    
+    def show_message(self, title, message, msg_type="info"):
+        """显示消息对话框，定位在主窗口旁边"""
+        # 创建自定义消息对话框
+        msg_window = tk.Toplevel(self.root)
+        msg_window.title(title)
+        msg_window.resizable(False, False)
+        
+        # 设置图标和颜色
+        if msg_type == "error":
+            icon = "❌"
+            bg_color = "#ffebee"
+        elif msg_type == "warning":
+            icon = "⚠️"
+            bg_color = "#fff3e0"
+        elif msg_type == "question":
+            icon = "❓"
+            bg_color = "#e3f2fd"
+        else:  # info
+            icon = "ℹ️"
+            bg_color = "#f1f8e9"
+        
+        msg_window.configure(bg=bg_color)
+        
+        # 创建内容框架
+        content_frame = tk.Frame(msg_window, bg=bg_color, padx=20, pady=15)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 图标和消息
+        icon_label = tk.Label(content_frame, text=icon, font=("Arial", 16), bg=bg_color)
+        icon_label.pack(pady=(0, 10))
+        
+        msg_label = tk.Label(content_frame, text=message, font=("Arial", 10), 
+                           bg=bg_color, wraplength=250, justify=tk.CENTER)
+        msg_label.pack(pady=(0, 15))
+        
+        # 确定按钮
+        ok_btn = tk.Button(content_frame, text="确定", command=msg_window.destroy,
+                          font=("Arial", 9), padx=20, pady=5)
+        ok_btn.pack()
+        
+        # 定位对话框
+        self.position_dialog_next_to_main(msg_window, 300, 150)
+        
+        # 设置焦点
+        msg_window.focus_set()
+        ok_btn.focus_set()
+        
+        # 绑定回车键
+        msg_window.bind('<Return>', lambda e: msg_window.destroy())
+        
+        return msg_window
+    
+    def debug_color_info(self):
+        """调试颜色信息 - 显示当前文本的所有颜色标签"""
+        debug_info = []
+        debug_info.append("=== 当前文本颜色标签调试信息 ===")
+        
+        # 获取所有标签
+        all_tags = self.text_editor.tag_names()
+        color_tags = [tag for tag in all_tags if tag.startswith('color_')]
+        
+        debug_info.append(f"总标签数: {len(all_tags)}")
+        debug_info.append(f"颜色标签数: {len(color_tags)}")
+        debug_info.append(f"所有标签: {list(all_tags)}")
+        debug_info.append("")
+        
+        if color_tags:
+            debug_info.append("颜色标签详情:")
+            for tag_name in color_tags:
+                ranges = self.text_editor.tag_ranges(tag_name)
+                color = self.text_editor.tag_cget(tag_name, 'foreground')
+                debug_info.append(f"  {tag_name}: 颜色={color}, 范围数={len(ranges)//2}")
+                
+                for i in range(0, len(ranges), 2):
+                    if i + 1 < len(ranges):
+                        start_pos = str(ranges[i])
+                        end_pos = str(ranges[i + 1])
+                        text_content = self.text_editor.get(start_pos, end_pos)
+                        debug_info.append(f"    范围: {start_pos} - {end_pos}, 内容: '{text_content}'")
+        else:
+            debug_info.append("没有找到颜色标签")
+        
+        debug_info.append("")
+        debug_info.append("=== 当前标签页保存的颜色信息 ===")
+        
+        # 检查当前标签页的颜色信息
+        if self.current_tab_index < len(self.tabs):
+            current_tab = self.tabs[self.current_tab_index]
+            if 'color_ranges' in current_tab:
+                color_ranges = current_tab['color_ranges']
+                debug_info.append(f"保存的颜色范围数: {len(color_ranges)}")
+                for i, color_range in enumerate(color_ranges):
+                    debug_info.append(f"  范围{i}: {color_range['start']} - {color_range['end']}, 颜色: {color_range['color']}")
+            else:
+                debug_info.append("当前标签页没有保存颜色信息")
+        
+        debug_info.append("")
+        debug_info.append("=== 文件保存调试信息 ===")
+        
+        # 检查当前文件信息
+        if hasattr(self, 'filename') and self.filename:
+            debug_info.append(f"当前文件: {self.filename}")
+            debug_info.append(f"文件扩展名: {os.path.splitext(self.filename)[1]}")
+            
+            # 检查保存方法选择
+            if self.filename.lower().endswith('.rtep'):
+                debug_info.append("应该使用: save_rich_text_file()")
+            else:
+                debug_info.append("应该使用: save_plain_text_file()")
+        else:
+            debug_info.append("当前没有关联文件")
+        
+        debug_info.append("")
+        debug_info.append("=== 保存方法测试 ===")
+        
+        # 模拟保存过程
+        try:
+            # 模拟 save_rich_text_file 的颜色保存逻辑
+            test_color_ranges = []
+            for tag_name in self.text_editor.tag_names():
+                if tag_name.startswith('color_'):
+                    ranges = self.text_editor.tag_ranges(tag_name)
+                    color = self.text_editor.tag_cget(tag_name, 'foreground')
+                    
+                    for i in range(0, len(ranges), 2):
+                        if i + 1 < len(ranges):
+                            test_color_ranges.append({
+                                'start': str(ranges[i]),
+                                'end': str(ranges[i + 1]),
+                                'color': color
+                            })
+            
+            debug_info.append(f"模拟保存的颜色范围数: {len(test_color_ranges)}")
+            for i, color_range in enumerate(test_color_ranges):
+                debug_info.append(f"  测试范围{i}: {color_range['start']} - {color_range['end']}, 颜色: {color_range['color']}")
+                
+        except Exception as e:
+            debug_info.append(f"模拟保存时出错: {str(e)}")
+        
+        # 显示调试信息
+        debug_text = "\n".join(debug_info)
+        
+        # 创建调试窗口
+        debug_window = tk.Toplevel(self.root)
+        debug_window.title("颜色调试信息")
+        debug_window.resizable(True, True)
+        
+        # 使用新的定位方法
+        self.position_dialog_next_to_main(debug_window, 600, 400)
+        
+        # 创建文本框显示调试信息
+        text_frame = tk.Frame(debug_window)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        debug_text_widget = tk.Text(text_frame, wrap=tk.WORD, font=("Consolas", 9))
+        scrollbar = tk.Scrollbar(text_frame, orient=tk.VERTICAL, command=debug_text_widget.yview)
+        debug_text_widget.config(yscrollcommand=scrollbar.set)
+        
+        debug_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        debug_text_widget.insert(1.0, debug_text)
+        debug_text_widget.config(state=tk.DISABLED)
+        
+        # 按钮框架
+        button_frame = tk.Frame(debug_window)
+        button_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        
+        tk.Button(button_frame, text="刷新", command=lambda: self.refresh_debug_info(debug_text_widget)).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="保存当前状态", command=self.save_current_tab_state).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="关闭", command=debug_window.destroy).pack(side=tk.RIGHT, padx=5)
+    
+    def refresh_debug_info(self, text_widget):
+        """刷新调试信息"""
+        text_widget.config(state=tk.NORMAL)
+        text_widget.delete(1.0, tk.END)
+        
+        # 重新生成调试信息
+        debug_info = []
+        debug_info.append("=== 当前文本颜色标签调试信息 ===")
+        
+        all_tags = self.text_editor.tag_names()
+        color_tags = [tag for tag in all_tags if tag.startswith('color_')]
+        
+        debug_info.append(f"总标签数: {len(all_tags)}")
+        debug_info.append(f"颜色标签数: {len(color_tags)}")
+        debug_info.append(f"所有标签: {list(all_tags)}")
+        debug_info.append("")
+        
+        if color_tags:
+            debug_info.append("颜色标签详情:")
+            for tag_name in color_tags:
+                ranges = self.text_editor.tag_ranges(tag_name)
+                color = self.text_editor.tag_cget(tag_name, 'foreground')
+                debug_info.append(f"  {tag_name}: 颜色={color}, 范围数={len(ranges)//2}")
+                
+                for i in range(0, len(ranges), 2):
+                    if i + 1 < len(ranges):
+                        start_pos = str(ranges[i])
+                        end_pos = str(ranges[i + 1])
+                        text_content = self.text_editor.get(start_pos, end_pos)
+                        debug_info.append(f"    范围: {start_pos} - {end_pos}, 内容: '{text_content}'")
+        else:
+            debug_info.append("没有找到颜色标签")
+        
+        debug_info.append("")
+        debug_info.append("=== 当前标签页保存的颜色信息 ===")
+        
+        if self.current_tab_index < len(self.tabs):
+            current_tab = self.tabs[self.current_tab_index]
+            if 'color_ranges' in current_tab:
+                color_ranges = current_tab['color_ranges']
+                debug_info.append(f"保存的颜色范围数: {len(color_ranges)}")
+                for i, color_range in enumerate(color_ranges):
+                    debug_info.append(f"  范围{i}: {color_range['start']} - {color_range['end']}, 颜色: {color_range['color']}")
+            else:
+                debug_info.append("当前标签页没有保存颜色信息")
+        
+        debug_text = "\n".join(debug_info)
+        text_widget.insert(1.0, debug_text)
+        text_widget.config(state=tk.DISABLED)
 
 if __name__ == "__main__":
     # 创建父窗口用于任务栏显示
