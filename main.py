@@ -26,6 +26,10 @@ class TopMostEditor:
         self.tabs = []  # 存储所有标签页信息
         self.current_tab_index = 0  # 当前活动标签页索引
         self.tab_counter = 0  # 标签页计数器
+        # 项目管理
+        self.project_filename = None  # 当前项目文件路径
+        self.project_modified = False  # 项目是否有未保存的更改
+        self.project_name = "未命名项目"  # 项目名称
         # 初始化图片拖拽相关属性
         self.drag_data = None
         self.drag_canvas = None  # 用于自由拖拽的Canvas覆盖层
@@ -43,7 +47,7 @@ class TopMostEditor:
         self.default_bg = "#A0A0A0"  # RGB值160,160,160对应的十六进制颜色代码
         self.default_fg = "#3D2914"  # 更深的褐色文字
         
-        # 设置窗口标题
+        # 设置窗口标题（初始化后会被update_window_title更新）
         self.root.title("缓冲编辑器（强制置顶）")
         
         # 移除系统标题栏
@@ -172,6 +176,8 @@ class TopMostEditor:
         self.root.bind("<Control-o>", lambda event: self.open_file())
         self.root.bind("<Control-s>", lambda event: self.save_file())
         self.root.bind("<Control-Shift-S>", lambda event: self.save_as())
+        self.root.bind("<Control-Shift-P>", lambda event: self.save_project())
+        self.root.bind("<Control-Shift-O>", lambda event: self.open_project())
         self.root.bind("<Control-f>", lambda event: self.find_text())
         self.root.bind("<Control-q>", lambda event: self.exit_app())
         self.root.bind("<Control-z>", lambda event: self.undo())
@@ -185,6 +191,9 @@ class TopMostEditor:
         
         # 设置焦点
         self.text_editor.focus_set()
+        
+        # 更新窗口标题
+        self.update_window_title()
     
     def create_custom_title_bar(self):
         """创建自定义标题栏"""
@@ -451,8 +460,13 @@ class TopMostEditor:
         file_menu = tk.Menu(file_btn, tearoff=0, bg=self.default_bg, fg=self.default_fg)
         file_menu.add_command(label="新建 (Ctrl+N)", command=self.new_file)
         file_menu.add_command(label="打开 (Ctrl+O)", command=self.open_file)
+        file_menu.add_separator()
         file_menu.add_command(label="保存 (Ctrl+S)", command=self.save_file)
         file_menu.add_command(label="另存为 (Ctrl+Shift+S)", command=self.save_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="保存项目 (Ctrl+Shift+P)", command=self.save_project)
+        file_menu.add_command(label="项目另存为", command=self.save_project_as)
+        file_menu.add_command(label="打开项目 (Ctrl+Shift+O)", command=self.open_project)
         file_menu.add_separator()
         file_menu.add_command(label="退出 (Ctrl+Q)", command=self.exit_app)
         file_btn.config(menu=file_menu)
@@ -601,14 +615,11 @@ class TopMostEditor:
         # 加载标签页内容
         self.load_tab_content(current_tab)
         
-        # 更新窗口标题
-        title = current_tab['title']
-        if current_tab['modified']:
-            title = '*' + title
-        self.root.title(f"缓冲编辑器（强制置顶） - {title}")
-        
         # 更新filename
         self.filename = current_tab['filename']
+        
+        # 更新窗口标题
+        self.update_window_title()
     
     def save_current_tab_state(self):
         """保存当前标签页的状态"""
@@ -686,7 +697,8 @@ class TopMostEditor:
             
             # 重新创建浮动图片
             for image_name, info in self.image_info.items():
-                if 'label' in info:  # 这是浮动图片
+                # 检查是否为浮动图片（通过is_floating标记或原有的label字段）
+                if info.get('is_floating', False) or 'label' in info:
                     try:
                         # 创建新的Label
                         image_label = tk.Label(self.text_editor, image=info['photo'], bg='white', relief='solid', bd=1)
@@ -702,8 +714,28 @@ class TopMostEditor:
                         self.bind_floating_image_context_menu(image_name)
                         if info.get('draggable', False):
                             self.toggle_floating_image_draggable(image_name, True)
-                    except Exception:
+                    except Exception as e:
+                        print(f"创建浮动图片失败: {e}")
                         # 如果创建失败，跳过这个图片
+                        continue
+                else:
+                    # 对于嵌入式图片，需要重新插入到文本编辑器中
+                    try:
+                        # 在文本末尾插入图片（因为原位置可能已经无效）
+                        new_image_name = self.text_editor.image_create(tk.END, image=info['photo'])
+                        
+                        # 更新图片信息中的名称（因为Tkinter会生成新的图片ID）
+                        if image_name != new_image_name:
+                            # 如果名称改变了，需要更新image_info字典
+                            self.image_info[new_image_name] = self.image_info.pop(image_name)
+                            image_name = new_image_name
+                        
+                        # 重新绑定右键菜单
+                        self.bind_image_context_menu(image_name)
+                        if info.get('draggable', False):
+                            self.toggle_image_draggable(image_name, True)
+                    except Exception as e:
+                        print(f"创建嵌入式图片失败: {e}")
                         continue
         
         # 设置修改状态
@@ -848,10 +880,7 @@ class TopMostEditor:
                 tab_data['title'] = new_name
                 # 更新窗口标题（如果是当前标签页）
                 if tab_index == self.current_tab_index:
-                    title = new_name
-                    if tab_data['modified']:
-                        title = '*' + title
-                    self.root.title(f"缓冲编辑器（强制置顶） - {title}")
+                    self.update_window_title()
                 # 刷新所有标签页UI以更新显示
                 self.refresh_all_tabs_ui()
             dialog.destroy()
@@ -934,7 +963,8 @@ class TopMostEditor:
         if self.check_save_changes():
             file_path = filedialog.askopenfilename(
                 filetypes=[
-                    ("所有支持的文件", "*.txt;*.py;*.rted"),
+                    ("所有支持的文件", "*.txt;*.py;*.rted;*.rtep"),
+                    ("富文本编辑器项目", "*.rtep"),
                     ("富文本文档", "*.rted"),
                     ("纯文本文件", "*.txt"), 
                     ("Python文件", "*.py"),
@@ -944,27 +974,53 @@ class TopMostEditor:
             
             if file_path:
                 try:
-                    if file_path.lower().endswith('.rted'):
+                    if file_path.lower().endswith('.rtep'):
+                        # 打开项目文件
+                        with open(file_path, 'r', encoding='utf-8') as file:
+                            project_data = json.load(file)
+                        
+                        if self.import_project_data(project_data):
+                            self.project_filename = file_path
+                            self.project_name = os.path.splitext(os.path.basename(file_path))[0]
+                            self.project_modified = False
+                            self.update_window_title()
+                            messagebox.showinfo("成功", f"项目已加载: {file_path}")
+                    elif file_path.lower().endswith('.rted'):
                         # 打开富文本文件
                         self.open_rich_text_file(file_path)
+                        
+                        # 更新当前标签页信息
+                        current_tab = self.tabs[self.current_tab_index]
+                        current_tab['filename'] = file_path
+                        current_tab['title'] = os.path.basename(file_path)
+                        current_tab['modified'] = False
+                        
+                        # 更新标签页UI（书签式显示标题第一个字符）
+                        tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                        current_tab['ui_button'].config(text=tab_display)
+                        
+                        self.filename = file_path
+                        self.update_window_title()
+                        self.update_line_numbers()
+                        self.apply_syntax_highlighting()
                     else:
                         # 打开纯文本文件
                         self.open_plain_text_file(file_path)
                         
-                    # 更新当前标签页信息
-                    current_tab = self.tabs[self.current_tab_index]
-                    current_tab['filename'] = file_path
-                    current_tab['title'] = os.path.basename(file_path)
-                    current_tab['modified'] = False
-                    
-                    # 更新标签页UI（书签式显示标题第一个字符）
-                    tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
-                    current_tab['ui_button'].config(text=tab_display)
-                    
-                    self.filename = file_path
-                    self.root.title(f"缓冲编辑器（强制置顶） - {os.path.basename(file_path)}")
-                    self.update_line_numbers()
-                    self.apply_syntax_highlighting()
+                        # 更新当前标签页信息
+                        current_tab = self.tabs[self.current_tab_index]
+                        current_tab['filename'] = file_path
+                        current_tab['title'] = os.path.basename(file_path)
+                        current_tab['modified'] = False
+                        
+                        # 更新标签页UI（书签式显示标题第一个字符）
+                        tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
+                        current_tab['ui_button'].config(text=tab_display)
+                        
+                        self.filename = file_path
+                        self.update_window_title()
+                        self.update_line_numbers()
+                        self.apply_syntax_highlighting()
                 except Exception as e:
                     messagebox.showerror("错误", f"无法打开文件: {str(e)}")
     
@@ -1115,6 +1171,9 @@ class TopMostEditor:
                     # 更新标签页UI（书签式显示标题第一个字符）
                     tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
                     current_tab['ui_button'].config(text=tab_display)
+                    
+                    # 更新窗口标题
+                    self.update_window_title()
                 
                 return result
             except Exception as e:
@@ -1136,10 +1195,6 @@ class TopMostEditor:
             file.write(content)
         
         self.text_editor.edit_modified(False)
-        # 更新窗口标题，移除星号
-        title = self.root.title()
-        if title.startswith('*'):
-            self.root.title(title[1:])
         return True
     
     def save_rich_text_file(self):
@@ -1199,10 +1254,6 @@ class TopMostEditor:
             json.dump(save_data, file, ensure_ascii=False, indent=2)
         
         self.text_editor.edit_modified(False)
-        # 更新窗口标题，移除星号
-        title = self.root.title()
-        if title.startswith('*'):
-            self.root.title(title[1:])
         return True
     
     def save_as(self):
@@ -1243,8 +1294,10 @@ class TopMostEditor:
             tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
             current_tab['ui_button'].config(text=tab_display)
             
-            self.root.title(f"缓冲编辑器（强制置顶） - {os.path.basename(file_path)}")
-            return self.save_file()
+            result = self.save_file()
+            if result:
+                self.update_window_title()
+            return result
         return False
     
     def exit_app(self):
@@ -1260,17 +1313,9 @@ class TopMostEditor:
                     pass
             self.floating_images.clear()
         
-        # 检查所有标签页是否有未保存的更改
-        for i, tab in enumerate(self.tabs):
-            if tab['modified']:
-                # 切换到有未保存更改的标签页
-                self.switch_to_tab(i)
-                response = messagebox.askyesnocancel("未保存的更改", f"标签页 '{tab['title']}' 有未保存的更改，是否保存？")
-                if response is None:  # Cancel
-                    return
-                elif response:  # Yes
-                    if not self.save_file():
-                        return
+        # 检查项目是否有未保存的更改
+        if not self.check_project_changes():
+            return
         
         # 关闭主窗口
         try:
@@ -2285,14 +2330,15 @@ class TopMostEditor:
                 current_tab = self.tabs[self.current_tab_index]
                 current_tab['modified'] = True
                 
+                # 标记项目为已修改
+                self.mark_project_modified()
+                
                 # 标签页按钮不显示修改状态，保持原有显示
                 # tab_display = current_tab['title'][0] if current_tab['title'] else str(self.current_tab_index + 1)
                 # current_tab['ui_button'].config(text=tab_display)
             
-            # 更新窗口标题
-            if self.root.title()[0] != '*':
-                title = self.root.title()
-                self.root.title('*' + title)
+            # 更新窗口标题（现在由update_window_title统一处理）
+            self.update_window_title()
             # 不要重置edit_modified状态，让它保持为True直到文件被保存
     
     def apply_syntax_highlighting(self):
@@ -2318,6 +2364,320 @@ class TopMostEditor:
                 start = "1.0 + %dc" % match.start()
                 end = "1.0 + %dc" % match.end()
                 self.text_editor.tag_add(tag, start, end)
+    
+    # ==================== 项目管理功能 ====================
+    
+    def export_project_data(self):
+        """导出项目数据结构"""
+        # 保存当前标签页状态
+        self.save_current_tab_state()
+        
+        import datetime
+        import time
+        
+        project_data = {
+            "version": "1.0",
+            "project_name": self.project_name,
+            "created_time": datetime.datetime.now().isoformat(),
+            "modified_time": datetime.datetime.now().isoformat(),
+            "current_tab_index": self.current_tab_index,
+            "tabs": []
+        }
+        
+        # 导出所有标签页数据
+        for tab in self.tabs:
+            tab_data = {
+                "id": tab['id'],
+                "title": tab['title'],
+                "filename": tab['filename'],
+                "content": tab['content'],
+                "images": [],
+                "image_info": {},
+                "modified": tab['modified'],
+                "cursor_pos": tab['cursor_pos'],
+                "custom_color": tab['custom_color']
+            }
+            
+            # 处理图片信息
+            if 'image_info' in tab and tab['image_info']:
+                for image_name, image_info in tab['image_info'].items():
+                    try:
+                        # 将图片转换为base64
+                        original_image = image_info['original_image']
+                        buffer = BytesIO()
+                        original_image.save(buffer, format='PNG')
+                        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                        
+                        image_data = {
+                            'name': image_name,
+                            'file_path': image_info['file_path'],
+                            'image_data': image_base64,
+                            'draggable': image_info['draggable']
+                        }
+                        
+                        # 检查是否为浮动图片
+                        if 'label' in image_info:  # 浮动图片
+                            image_data.update({
+                                'type': 'floating',
+                                'x': image_info.get('x', 10),
+                                'y': image_info.get('y', 10)
+                            })
+                        else:  # 嵌入式图片
+                            image_data.update({
+                                'type': 'embedded',
+                                'x_offset': image_info.get('x_offset', 0),
+                                'y_offset': image_info.get('y_offset', 0)
+                            })
+                        
+                        tab_data['images'].append(image_data)
+                    except Exception as e:
+                        print(f"导出图片时出错: {e}")
+            
+            project_data['tabs'].append(tab_data)
+        
+        return project_data
+    
+    def import_project_data(self, project_data):
+        """导入并恢复项目状态"""
+        try:
+            import time
+            
+            # 清空当前所有标签页
+            for tab in self.tabs:
+                if tab.get('ui_button'):
+                    tab['ui_button'].destroy()
+            
+            # 清理浮动图片
+            if hasattr(self, 'floating_images'):
+                for image_label in self.floating_images.values():
+                    try:
+                        image_label.destroy()
+                    except tk.TclError:
+                        pass
+                self.floating_images.clear()
+            
+            # 重置标签页列表和索引
+            self.tabs = []
+            self.tab_counter = 0
+            self.current_tab_index = 0
+            
+            # 恢复项目信息
+            self.project_name = project_data.get('project_name', '未命名项目')
+            target_tab_index = project_data.get('current_tab_index', 0)
+            
+            # 恢复所有标签页
+            for tab_data in project_data.get('tabs', []):
+                self.tab_counter += 1
+                
+                # 创建标签页数据结构
+                new_tab = {
+                    'id': tab_data.get('id', self.tab_counter),
+                    'title': tab_data.get('title', f'标签页{self.tab_counter}'),
+                    'filename': tab_data.get('filename'),
+                    'content': tab_data.get('content', ''),
+                    'images': [],
+                    'image_info': {},
+                    'modified': False,  # 导入后所有标签页都应该是未修改状态
+                    'cursor_pos': tab_data.get('cursor_pos', '1.0'),
+                    'custom_color': tab_data.get('custom_color')
+                }
+                
+                # 恢复图片信息
+                for img_data in tab_data.get('images', []):
+                    try:
+                        # 从base64恢复图片
+                        image_base64 = img_data['image_data']
+                        image_bytes = base64.b64decode(image_base64)
+                        image = Image.open(BytesIO(image_bytes))
+                        
+                        # 创建PhotoImage
+                        photo = ImageTk.PhotoImage(image)
+                        
+                        image_name = img_data.get('name', f"image_{int(time.time() * 1000000)}")
+                        
+                        # 保存图片信息到标签页
+                        new_tab['images'].append(photo)
+                        
+                        # 根据图片类型设置不同的属性
+                        image_info = {
+                            'photo': photo,
+                            'draggable': img_data.get('draggable', False),
+                            'file_path': img_data.get('file_path', ''),
+                            'original_image': image
+                        }
+                        
+                        if img_data.get('type') == 'floating':
+                            # 浮动图片
+                            image_info.update({
+                                'is_floating': True,
+                                'x': img_data.get('x', 10),
+                                'y': img_data.get('y', 10)
+                            })
+                        else:
+                            # 嵌入式图片
+                            image_info.update({
+                                'x_offset': img_data.get('x_offset', 0),
+                                'y_offset': img_data.get('y_offset', 0)
+                            })
+                        
+                        new_tab['image_info'][image_name] = image_info
+                        
+                    except Exception as e:
+                        print(f"恢复图片时出错: {e}")
+                
+                # 添加到标签页列表
+                self.tabs.append(new_tab)
+                
+                # 创建标签页UI
+                self.create_tab_ui(len(self.tabs) - 1)
+            
+            # 如果没有标签页，创建一个默认标签页
+            if not self.tabs:
+                self.create_new_tab("新建文档")
+                target_tab_index = 0
+            
+            # 切换到目标标签页（避免保存当前状态，因为是导入过程）
+            if target_tab_index < len(self.tabs):
+                # 直接设置索引，不调用switch_to_tab避免保存当前状态
+                self.current_tab_index = target_tab_index
+                current_tab = self.tabs[target_tab_index]
+                self.update_tab_ui_states()
+                self.load_tab_content(current_tab)
+                self.filename = current_tab['filename']
+                self.update_window_title()
+            else:
+                # 切换到第一个标签页
+                self.current_tab_index = 0
+                current_tab = self.tabs[0]
+                self.update_tab_ui_states()
+                self.load_tab_content(current_tab)
+                self.filename = current_tab['filename']
+                self.update_window_title()
+            
+            # 重置项目修改状态
+            self.project_modified = False
+            
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"导入项目数据时出错: {str(e)}")
+            return False
+    
+    def save_project(self):
+        """保存项目"""
+        if self.project_filename:
+            return self.save_project_to_file(self.project_filename)
+        else:
+            return self.save_project_as()
+    
+    def save_project_as(self):
+        """项目另存为"""
+        file_path = filedialog.asksaveasfilename(
+            title="保存项目",
+            defaultextension=".rtep",
+            filetypes=[
+                ("富文本编辑器项目", "*.rtep"),
+                ("所有文件", "*.*")
+            ]
+        )
+        
+        if file_path:
+            if self.save_project_to_file(file_path):
+                self.project_filename = file_path
+                self.project_name = os.path.splitext(os.path.basename(file_path))[0]
+                self.update_window_title()
+                return True
+        return False
+    
+    def save_project_to_file(self, file_path):
+        """保存项目到指定文件"""
+        try:
+            project_data = self.export_project_data()
+            
+            with open(file_path, 'w', encoding='utf-8') as file:
+                json.dump(project_data, file, ensure_ascii=False, indent=2)
+            
+            # 重置项目修改状态
+            self.project_modified = False
+            
+            # 重置所有标签页的修改状态
+            for tab in self.tabs:
+                tab['modified'] = False
+            
+            # 重置当前文本编辑器的修改状态
+            if hasattr(self, 'text_editor') and self.text_editor.winfo_exists():
+                self.text_editor.edit_modified(False)
+            
+            # 更新窗口标题
+            self.update_window_title()
+            
+            messagebox.showinfo("成功", f"项目已保存到: {file_path}")
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"保存项目时出错: {str(e)}")
+            return False
+    
+    def open_project(self):
+        """打开项目文件"""
+        if self.check_project_changes():
+            file_path = filedialog.askopenfilename(
+                title="打开项目",
+                filetypes=[
+                    ("富文本编辑器项目", "*.rtep"),
+                    ("所有文件", "*.*")
+                ]
+            )
+            
+            if file_path:
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as file:
+                        project_data = json.load(file)
+                    
+                    if self.import_project_data(project_data):
+                        self.project_filename = file_path
+                        self.project_name = os.path.splitext(os.path.basename(file_path))[0]
+                        self.project_modified = False
+                        self.update_window_title()
+                        messagebox.showinfo("成功", f"项目已加载: {file_path}")
+                    
+                except Exception as e:
+                    messagebox.showerror("错误", f"打开项目时出错: {str(e)}")
+    
+    def check_project_changes(self):
+        """检查项目是否有未保存的更改"""
+        # 检查是否有标签页被修改
+        has_modified_tabs = any(tab.get('modified', False) for tab in self.tabs)
+        
+        if has_modified_tabs or self.project_modified:
+            response = messagebox.askyesnocancel(
+                "未保存的更改", 
+                "当前项目有未保存的更改，是否保存？"
+            )
+            if response is None:  # Cancel
+                return False
+            elif response:  # Yes
+                return self.save_project()
+        return True
+    
+    def update_window_title(self):
+        """更新窗口标题"""
+        title = f"缓冲编辑器（强制置顶） - {self.project_name}"
+        
+        # 检查是否有未保存的更改
+        has_changes = any(tab.get('modified', False) for tab in self.tabs) or self.project_modified
+        if has_changes:
+            title = '*' + title
+        
+        self.root.title(title)
+        if hasattr(self, 'title_label'):
+            self.title_label.config(text=title)
+    
+    def mark_project_modified(self):
+        """标记项目为已修改"""
+        if not self.project_modified:
+            self.project_modified = True
+            self.update_window_title()
 
 if __name__ == "__main__":
     # 创建父窗口用于任务栏显示
