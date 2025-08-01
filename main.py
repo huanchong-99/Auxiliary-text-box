@@ -111,6 +111,9 @@ class TopMostEditor:
         self.text_editor.insert("1.0", default_lines)
         self.text_editor.mark_set(tk.INSERT, "1.0")  # 将光标设置到第一行
         
+        # 重置修改状态，避免启动时显示未保存更改
+        self.text_editor.edit_modified(False)
+        
         # 创建ttk样式用于滚动条
         style = ttk.Style()
         style.theme_use('clam')  # 使用clam主题以支持颜色自定义
@@ -544,6 +547,9 @@ class TopMostEditor:
         # 更新行号显示
         if self.show_line_numbers:
             self.update_line_numbers()
+        
+        # 重置修改状态，避免新建标签页时显示未保存更改
+        self.text_editor.edit_modified(False)
     
     def create_tab_ui(self, tab_index):
         """创建书签式标签页的UI元素"""
@@ -974,6 +980,9 @@ class TopMostEditor:
                 self.image_info.clear()
             if hasattr(self, 'images'):
                 self.images.clear()
+            
+            # 重置修改状态，避免打开文件时显示未保存更改
+            self.text_editor.edit_modified(False)
     
     def open_rich_text_file(self, file_path):
         """打开富文本文件"""
@@ -1082,6 +1091,9 @@ class TopMostEditor:
             except Exception as e:
                 print(f"恢复图片时出错: {e}")
                 messagebox.showwarning("警告", f"无法恢复某个图片: {str(e)}")
+        
+        # 重置修改状态，避免打开文件时显示未保存更改
+        self.text_editor.edit_modified(False)
     
     def save_file(self):
         if self.filename:
@@ -1261,11 +1273,17 @@ class TopMostEditor:
                         return
         
         # 关闭主窗口
-        self.root.destroy()
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass  # 窗口已经被销毁
         
         # 如果有父窗口引用，也关闭父窗口
-        if self.parent_window and self.parent_window.winfo_exists():
-            self.parent_window.destroy()
+        try:
+            if hasattr(self, 'parent_window') and self.parent_window and self.parent_window.winfo_exists():
+                self.parent_window.destroy()
+        except tk.TclError:
+            pass  # 父窗口已经被销毁
     
     def check_save_changes(self):
         if self.text_editor.edit_modified():
