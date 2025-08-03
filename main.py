@@ -15,7 +15,14 @@ try:
     from PIL import Image, ImageTk
     PIL_AVAILABLE = True
 except ImportError:
-    PIL_AVAILABLE = False
+    import subprocess, sys
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow"])
+        from PIL import Image, ImageTk
+        PIL_AVAILABLE = True
+    except Exception as e:
+        print("自动安装 Pillow 失败，请手动安装: pip install pillow")
+        PIL_AVAILABLE = False
 
 class TopMostEditor:
     def __init__(self, root):
@@ -186,7 +193,8 @@ class TopMostEditor:
         self.root.bind("<Control-y>", lambda event: self.redo())
         self.root.bind("<Control-x>", lambda event: self.cut())
         self.root.bind("<Control-c>", lambda event: self.copy())
-        self.root.bind("<Control-v>", lambda event: self.paste())
+        # 将 Ctrl+V 绑定到文本编辑器并返回 "break"，避免与默认粘贴冲突
+        self.text_editor.bind("<Control-v>", lambda event: (self.paste() or "break"))
         
         # 创建窗口边缘调整大小区域
         self.create_resize_borders()
@@ -393,7 +401,7 @@ class TopMostEditor:
     def create_drag_canvas(self):
         """创建用于图片自由拖拽的Canvas覆盖层"""
         self.drag_canvas = tk.Canvas(self.text_frame, highlightthickness=0, 
-                                   bg=self.default_bg, bd=0)
+                                   bd=0)  # 不设置bg参数以获得透明效果
         # 初始时不显示Canvas
         self.drag_canvas.place_forget()
     
@@ -662,7 +670,7 @@ class TopMostEditor:
             
             # 获取所有文字标签
             for tag_name in self.text_editor.tag_names():
-                if tag_name.startswith('color_'):
+                if tag_name.startswith(('color_', 'size_', 'font_', 'underline', 'format_')):
                     ranges = self.text_editor.tag_ranges(tag_name)
                     color = self.text_editor.tag_cget(tag_name, 'foreground')
                     
@@ -741,46 +749,15 @@ class TopMostEditor:
             
             # 重新创建浮动图片
             for image_name, info in self.image_info.items():
-                # 检查是否为浮动图片（通过is_floating标记或原有的label字段）
-                if info.get('is_floating', False) or 'label' in info:
-                    try:
-                        # 创建新的Label
-                        image_label = tk.Label(self.text_editor, image=info['photo'], bg='white', relief='solid', bd=1)
-                        x = info.get('x', 10)
-                        y = info.get('y', 10)
-                        image_label.place(x=x, y=y)
-                        
-                        # 更新引用
-                        self.floating_images[image_name] = image_label
-                        info['label'] = image_label
-                        
-                        # 重新绑定事件
-                        self.bind_floating_image_context_menu(image_name)
-                        if info.get('draggable', False):
-                            self.toggle_floating_image_draggable(image_name, True)
-                    except Exception as e:
-                        print(f"创建浮动图片失败: {e}")
-                        # 如果创建失败，跳过这个图片
-                        continue
-                else:
-                    # 对于嵌入式图片，需要重新插入到文本编辑器中
-                    try:
-                        # 在文本末尾插入图片（因为原位置可能已经无效）
-                        new_image_name = self.text_editor.image_create(tk.END, image=info['photo'])
-                        
-                        # 更新图片信息中的名称（因为Tkinter会生成新的图片ID）
-                        if image_name != new_image_name:
-                            # 如果名称改变了，需要更新image_info字典
-                            self.image_info[new_image_name] = self.image_info.pop(image_name)
-                            image_name = new_image_name
-                        
-                        # 重新绑定右键菜单
-                        self.bind_image_context_menu(image_name)
-                        if info.get('draggable', False):
-                            self.toggle_image_draggable(image_name, True)
-                    except Exception as e:
-                        print(f"创建嵌入式图片失败: {e}")
-                        continue
+                # 若旧项目保存了浮动图片信息，转换为嵌入式图片
+                try:
+                    new_name = self.text_editor.image_create('end', image=info['photo'])
+                    # 更新 key 与引用
+                    self.image_info[new_name] = info
+                except Exception as e:
+                    print(f"创建嵌入式图片失败: {e}")
+                    continue
+
         
         # 设置修改状态
         self.text_editor.edit_modified(tab_data['modified'])
@@ -1299,7 +1276,7 @@ class TopMostEditor:
         # 保存颜色信息
         save_color_ranges = []
         for tag_name in self.text_editor.tag_names():
-            if tag_name.startswith('color_'):
+            if tag_name.startswith(('color_', 'size_', 'font_', 'underline', 'format_')):
                 ranges = self.text_editor.tag_ranges(tag_name)
                 color = self.text_editor.tag_cget(tag_name, 'foreground')
                 
@@ -1465,9 +1442,66 @@ class TopMostEditor:
         self.update_line_numbers()
     
     def copy(self):
-        self.text_editor.event_generate("<<Copy>>")
+        """复制文本及其格式到剪贴板"""
+        try:
+            sel_start = self.text_editor.index(tk.SEL_FIRST)
+            sel_end = self.text_editor.index(tk.SEL_LAST)
+        except tk.TclError:
+            return  # 无选区
+
+        selected_text = self.text_editor.get(sel_start, sel_end)
+        tags_payload = {}
+        for tag_name in self.text_editor.tag_names():
+            if tag_name.startswith(("color_", "size_", "font_", "underline", "format_")):
+                ranges = self.text_editor.tag_ranges(tag_name)
+                rel_ranges = []
+                for i in range(0, len(ranges), 2):
+                    if i + 1 < len(ranges):
+                        r_start, r_end = ranges[i], ranges[i+1]
+                        # 仅保留与选区相交的范围
+                        if self.text_editor.compare(r_end, ">", sel_start) and self.text_editor.compare(r_start, "<", sel_end):
+                            start_offset = self.text_editor.count(sel_start, r_start, "chars")[0]
+                            end_offset = self.text_editor.count(sel_start, r_end, "chars")[0]
+                            rel_ranges.append([start_offset, end_offset])
+                if rel_ranges:
+                    tags_payload[tag_name] = {
+                        "config": {
+                            "foreground": self.text_editor.tag_cget(tag_name, "foreground"),
+                            "font": self.text_editor.tag_cget(tag_name, "font"),
+                            "underline": self.text_editor.tag_cget(tag_name, "underline")
+                        },
+                        "ranges": rel_ranges
+                    }
+        package = json.dumps({"__richtext__": True, "text": selected_text, "tags": tags_payload})
+        self.root.clipboard_clear()
+        self.root.clipboard_append(package)
+        self.copied_richtext = package
     
     def paste(self):
+        """粘贴剪贴板内容，支持富文本"""
+        try:
+            clip = self.root.clipboard_get()
+        except tk.TclError:
+            return
+        try:
+            data = json.loads(clip)
+            if isinstance(data, dict) and data.get("__richtext__"):
+                text = data.get("text", "")
+                insert_index = self.text_editor.index(tk.INSERT)
+                self.text_editor.insert(insert_index, text)
+                for tag_name, tag_data in data.get("tags", {}).items():
+                    cfg = {k: v for k, v in tag_data.get("config", {}).items() if v not in ("", None)}
+                    if cfg:
+                        self.text_editor.tag_config(tag_name, **cfg)
+                    for r in tag_data.get("ranges", []):
+                        if len(r) == 2:
+                            start_pos = f"{insert_index}+{r[0]}c"
+                            end_pos = f"{insert_index}+{r[1]}c"
+                            self.text_editor.tag_add(tag_name, start_pos, end_pos)
+                self.update_line_numbers()
+                return
+        except Exception:
+            pass  # 非富文本
         self.text_editor.event_generate("<<Paste>>")
         self.update_line_numbers()
     
@@ -1513,44 +1547,25 @@ class TopMostEditor:
                 # 转换为PhotoImage
                 photo = ImageTk.PhotoImage(image)
                 
-                # 创建浮动图片Label
-                image_label = tk.Label(self.text_editor, image=photo, bg='white', relief='solid', bd=1)
-                
-                # 获取插入位置
+                # 将图片直接嵌入文本流，随滚动同步
                 cursor_pos = self.text_editor.index(tk.INSERT)
-                bbox = self.text_editor.bbox(cursor_pos)
-                if bbox:
-                    x, y, width, height = bbox
-                else:
-                    x, y = 10, 10
-                
-                # 放置图片Label
-                image_label.place(x=x, y=y)
-                
-                # 生成唯一的图片名称
-                import time
-                image_name = f"floating_image_{int(time.time() * 1000)}"
-                
-                # 保存图片引用和信息，防止被垃圾回收
+                image_name = self.text_editor.image_create(cursor_pos, image=photo)
+
+                # 保存图片引用，防止被垃圾回收
                 if not hasattr(self, 'images'):
                     self.images = []
                 if not hasattr(self, 'image_info'):
                     self.image_info = {}
-                    
                 self.images.append(photo)
-                self.floating_images[image_name] = image_label
                 self.image_info[image_name] = {
                     'photo': photo,
                     'draggable': False,
                     'file_path': file_path,
-                    'original_image': image,
-                    'x': x,
-                    'y': y,
-                    'label': image_label
+                    'original_image': image
                 }
                 
-                # 为图片绑定右键菜单
-                self.bind_floating_image_context_menu(image_name)
+                # 绑定右键菜单并允许拖动开关
+                self.bind_image_context_menu(image_name)
                 
             except Exception as e:
                 self.show_message("错误", f"无法插入图片: {str(e)}", "error")
@@ -1643,10 +1658,8 @@ class TopMostEditor:
             self.image_info[image_name]['draggable'] = draggable
             
             if draggable:
-                # 启用拖动
+                # 启用拖动，仅在按下时启动，由 Canvas 处理移动与释放
                 self.text_editor.tag_bind(f"image_{image_name}", "<Button-1>", lambda e: self.start_image_drag(e, image_name))
-                self.text_editor.tag_bind(f"image_{image_name}", "<B1-Motion>", lambda e: self.drag_image(e, image_name))
-                self.text_editor.tag_bind(f"image_{image_name}", "<ButtonRelease-1>", lambda e: self.end_image_drag(e, image_name))
             else:
                 # 禁用拖动
                 self.text_editor.tag_unbind(f"image_{image_name}", "<Button-1>")
@@ -1718,84 +1731,89 @@ class TopMostEditor:
             'image_name': image_name,
             'start_x': event.x,
             'start_y': event.y,
-            'original_pos': original_pos
+            'original_pos': original_pos,
+            'dragging': True
         }
         
-        # 激活Canvas覆盖层进行自由拖拽
-        if self.drag_canvas:
-            # 获取文本编辑器的尺寸和位置
-            self.text_editor.update_idletasks()
-            x = self.text_editor.winfo_x()
-            y = self.text_editor.winfo_y()
-            width = self.text_editor.winfo_width()
-            height = self.text_editor.winfo_height()
+        # 直接在文本编辑器上绑定拖动事件，不使用Canvas覆盖层
+        self.text_editor.bind("<B1-Motion>", lambda e: self.direct_drag_image(e, image_name))
+        self.text_editor.bind("<ButtonRelease-1>", lambda e: self.end_direct_drag(e, image_name))
+    
+    def direct_drag_image(self, event, image_name):
+        """直接在文本编辑器中拖动图片"""
+        if not hasattr(self, 'drag_data') or self.drag_data is None:
+            return
             
-            # 显示Canvas覆盖层
-            self.drag_canvas.place(x=x, y=y, width=width, height=height)
+        try:
+            # 获取鼠标在文本编辑器中的位置
+            x, y = event.x, event.y
             
-            # 在Canvas上创建图片副本用于拖拽显示
-            if image_name in self.image_info:
-                photo = self.image_info[image_name]['photo']
-                self.drag_canvas.delete("drag_image")  # 清除之前的拖拽图片
-                self.drag_canvas.create_image(event.x, event.y, image=photo, tags="drag_image")
+            # 将坐标转换为文本位置
+            index = self.text_editor.index(f"@{x},{y}")
+            
+            # 检查位置是否有效
+            if index and index != "1.0":
+                # 获取图片当前位置
+                try:
+                    current_pos = self.text_editor.index(image_name)
+                    # 删除原位置的图片
+                    self.text_editor.delete(current_pos)
+                except tk.TclError:
+                    # 如果无法获取当前位置，可能图片已被删除，跳过
+                    pass
                 
-                # 绑定Canvas的鼠标事件
-                self.drag_canvas.bind("<B1-Motion>", lambda e: self.canvas_drag_image(e, image_name))
-                self.drag_canvas.bind("<ButtonRelease-1>", lambda e: self.canvas_end_drag(e, image_name))
-                # 添加Canvas点击事件，用于检测点击空白区域
-                self.drag_canvas.bind("<Button-1>", lambda e: self.canvas_click_handler(e, image_name))
-                self.drag_canvas.focus_set()
+                # 在新位置插入图片
+                if image_name in self.image_info:
+                    new_name = self.text_editor.image_create(index, image=self.image_info[image_name]['photo'])
+                    # 如果返回了新的名称，更新图片信息
+                    if new_name != image_name:
+                        self.image_info[new_name] = self.image_info.pop(image_name)
+                        self.drag_data['image_name'] = new_name
+                
+        except (tk.TclError, KeyError):
+            pass
+    
+    def end_direct_drag(self, event, image_name):
+        """结束直接拖动"""
+        try:
+            # 获取最终位置
+            x, y = event.x, event.y
+            index = self.text_editor.index(f"@{x},{y}")
+            
+            # 确保图片在正确位置
+            if index and image_name in self.image_info:
+                # 获取图片当前位置并删除
+                try:
+                    current_pos = self.text_editor.index(image_name)
+                    self.text_editor.delete(current_pos)
+                except tk.TclError:
+                    pass
+                
+                # 在最终位置插入图片
+                final_name = self.text_editor.image_create(index, image=self.image_info[image_name]['photo'])
+                
+                # 如果图片名称发生变化，更新图片信息
+                if final_name != image_name:
+                    self.image_info[final_name] = self.image_info.pop(image_name)
+                    image_name = final_name
+                
+                # 重新绑定拖动事件
+                self.bind_image_context_menu(image_name)
+                
+        except (tk.TclError, KeyError):
+            pass
+        
+        # 清理拖动数据
+        self.drag_data = None
+        
+        # 解绑拖动事件
+        self.text_editor.unbind("<B1-Motion>")
+        self.text_editor.unbind("<ButtonRelease-1>")
     
     def drag_image(self, event, image_name):
-        """拖动图片过程中"""
-        if hasattr(self, 'drag_data') and self.drag_data['image_name'] == image_name:
-            # 检查是否为浮动图片，如果是则不处理
-            if image_name in self.image_info and 'label' in self.image_info[image_name]:
-                return
-                
-            try:
-                # 计算鼠标移动的距离
-                dx = event.x - self.drag_data['start_x']
-                dy = event.y - self.drag_data['start_y']
-                
-                # 更新图片的偏移量
-                if image_name in self.image_info:
-                    self.image_info[image_name]['x_offset'] = dx
-                    self.image_info[image_name]['y_offset'] = dy
-                    
-                    # 尝试找到最接近的文本位置
-                    try:
-                        new_pos = self.text_editor.index(f"@{event.x},{event.y}")
-                        
-                        # 获取图片对象
-                        photo = self.image_info[image_name]['photo']
-                        
-                        # 删除原位置的图片
-                        current_pos = self.text_editor.index(image_name)
-                        self.text_editor.delete(current_pos)
-                        
-                        # 在新位置插入图片
-                        new_image_name = self.text_editor.image_create(new_pos, image=photo)
-                        
-                        # 更新图片信息
-                        old_info = self.image_info.pop(image_name)
-                        self.image_info[new_image_name] = old_info
-                        
-                        # 重新绑定事件
-                        self.bind_image_context_menu(new_image_name)
-                        if old_info['draggable']:
-                            self.toggle_image_draggable(new_image_name, True)
-                        
-                        # 更新拖动数据
-                        self.drag_data['image_name'] = new_image_name
-                        self.drag_data['start_x'] = event.x
-                        self.drag_data['start_y'] = event.y
-                        
-                    except tk.TclError:
-                        pass  # 忽略无效位置
-                        
-            except Exception as e:
-                pass  # 忽略拖动过程中的错误
+        """拖动图片过程中（已废弃，由Canvas处理）"""
+        # 此函数已不再使用，拖动逻辑完全由Canvas处理
+        pass
     
     def canvas_click_handler(self, event, image_name):
         """处理Canvas点击事件"""
@@ -1818,7 +1836,8 @@ class TopMostEditor:
         if hasattr(self, 'drag_data') and self.drag_data['image_name'] == image_name:
             # 更新Canvas上的图片位置
             self.drag_canvas.coords("drag_image", event.x, event.y)
-            
+
+
             # 计算偏移量
             dx = event.x - self.drag_data['start_x']
             dy = event.y - self.drag_data['start_y']
@@ -1858,8 +1877,28 @@ class TopMostEditor:
                 return
                 
             try:
-                # 计算最终位置
-                final_pos = self.text_editor.index(f"@{event.x},{event.y}")
+                # 将Canvas坐标转换为文本编辑器坐标
+                text_x = event.x
+                text_y = event.y
+                
+                # 计算最终位置，支持横向和纵向移动
+                try:
+                    # 使用@坐标获取最接近的字符位置
+                    final_pos = self.text_editor.index(f"@{text_x},{text_y}")
+                    
+                    # 检查位置是否在文本范围内
+                    start_pos = self.text_editor.index("1.0")
+                    end_pos = self.text_editor.index("end-1c")
+                    
+                    # 如果位置超出范围，调整到合适位置
+                    if self.text_editor.compare(final_pos, ">", end_pos):
+                        final_pos = end_pos
+                    elif self.text_editor.compare(final_pos, "<", start_pos):
+                        final_pos = start_pos
+                        
+                except tk.TclError:
+                    # 如果坐标无效，使用当前光标位置
+                    final_pos = self.text_editor.index(tk.INSERT)
                 
                 # 获取图片对象
                 photo = self.image_info[image_name]['photo']
